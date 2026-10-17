@@ -1,0 +1,16 @@
+{
+  "name": "習慣打卡",
+  "short_name": "習慣",
+  "description": "每日、每月、每季的習慣打卡與提醒",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7f5",
+  "theme_color": "#2e7d5b",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

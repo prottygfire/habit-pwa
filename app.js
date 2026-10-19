@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-19 v3';
+  var VERSION = '2026-10-19 v4';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -13,7 +13,7 @@
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
   var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
-  var TABS = ['today', 'tasks', 'plan', 'settings'];
+  var TABS = ['today', 'train', 'tasks', 'plan', 'settings'];
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -108,7 +108,7 @@
     return flush().then(function () {
       if (state.queue.length) return;
       return api('bootstrap').then(function (res) {
-        state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history };
+        state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {} };
         LS.set('habit.data', state.data);
       });
     }).catch(function (e) {
@@ -170,6 +170,42 @@
     d.leave = d.leave.filter(function (x) { return x !== date; });
     if (on) d.leave.push(date);
     enqueue('setLeave', { date: date, on: on });
+  }
+
+  // ---- training (the 訓練 tab: suggestions, never obligations) ----
+
+  function trainStart() { return (state.data.settings && state.data.settings.trainStart) || '2026-10-19'; }
+  function trainRows() { return state.data.train || []; }
+  function trainOn(id, date) { return trainRows().filter(function (r) { return r.item === id && r.date === date; })[0]; }
+  function trainStateOn(date) { var r = trainOn('_state', date); return r ? r.version : ''; }
+  function runTask() {
+    return state.data.tasks.filter(function (t) { return t.active && t.freq === 'weekly_min' && t.name.indexOf('跑') >= 0; })[0];
+  }
+
+  function setTrainLocal(id, date, row) {
+    state.data.train = trainRows().filter(function (r) { return !(r.item === id && r.date === date); });
+    if (row) state.data.train.push(Object.assign({ date: date, item: id, minutes: 0, rpe: 0, version: '', note: '' }, row));
+  }
+
+  // A finished run also feeds the 跑步 weekly-minutes goal, so the two views never disagree.
+  function trainDone(item, date, minutes, rpe, note, version) {
+    setTrainLocal(item.id, date, { minutes: minutes, rpe: rpe, version: version, note: note });
+    enqueue('trainSet', { date: date, item: item.id, done: true, minutes: minutes, rpe: rpe, version: version, note: note });
+    var rt = runTask();
+    if (item.isRun && rt && minutes > 0) saveMinutes(rt, date, minutes);
+  }
+
+  function trainUndo(item, date) {
+    setTrainLocal(item.id, date, null);
+    enqueue('trainSet', { date: date, item: item.id, done: false });
+    var rt = runTask();
+    if (item.isRun && rt) saveMinutes(rt, date, 0);
+  }
+
+  function setTrainState(date, st) {
+    var on = trainStateOn(date) !== st;
+    setTrainLocal('_state', date, on ? { version: st } : null);
+    enqueue('trainSet', { date: date, item: '_state', done: on, version: on ? st : '' });
   }
 
   // ---- modals ----
@@ -246,6 +282,31 @@
     return modalShell(t.name, form);
   }
 
+  function trainModal(m) {
+    var item = m.task, date = m.date, cur = trainOn(item.id, date);
+    var st = trainStateOn(date);
+    var form = h('form', { onsubmit: function (ev) {
+      ev.preventDefault();
+      var mins = parseInt(form.elements.mins.value, 10) || 0;
+      if (mins < 0 || mins > 1440) { toast('分鐘數要在 0 到 1440 之間'); return; }
+      var ver = st === '疲勞' && item.easy ? '輕鬆' : st === '精神好' && item.up ? '進階' : '標準';
+      closeModal();
+      trainDone(item, date, mins, parseInt(form.elements.rpe.value, 10) || 0, form.elements.note.value.trim(), ver);
+    } },
+      h('p', { class: 'muted' }, dateTitle(date) + '：做了就記一筆，沒做不會被記成失敗。'),
+      h('label', { class: 'f', for: 't-mins' }, '實際分鐘' + (item.isRun ? '（會一併計入跑步每週累計）' : '（選填）')),
+      h('input', { type: 'number', id: 't-mins', name: 'mins', min: '0', max: '1440', inputmode: 'numeric', value: cur ? cur.minutes || '' : item.planned || item.minutes || '' }),
+      h('label', { class: 'f', for: 't-rpe' }, '費力程度 RPE（選填，1 輕鬆 ～ 10 全力）'),
+      h('select', { id: 't-rpe', name: 'rpe' }, [h('option', { value: '' }, '不填')].concat([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(function (n) { return h('option', { value: String(n), selected: !!cur && cur.rpe === n }, String(n)); }))),
+      h('label', { class: 'f', for: 't-note' }, '備註（選填，例如髖緊、睡不好）'),
+      h('input', { type: 'text', id: 't-note', name: 'note', maxlength: '60', value: cur ? cur.note : '' }),
+      h('div', { class: 'row', style: 'margin-top:14px' },
+        h('button', { class: 'btn primary grow', type: 'submit' }, cur ? '更新' : '做了'),
+        cur ? h('button', { class: 'btn danger', type: 'button', onclick: function () { closeModal(); trainUndo(item, date); } }, '取消') : null,
+        h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+    return modalShell(item.title, form);
+  }
+
   function renderModal() {
     var host = document.getElementById('modal');
     if (!state.modal || !state.data) { host.textContent = ''; host.dataset.key = ''; return; }
@@ -254,7 +315,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : minutesModal(m, c));
+    host.appendChild(m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -343,6 +404,64 @@
       accum.forEach(function (t) { nodes.push(accumItem(t, c, date)); });
     }
     if (!daily.length && !accum.length) nodes.push(h('p', { class: 'muted' }, '這天沒有任務。到「任務」頁新增。'));
+    return nodes;
+  }
+
+  // ---- 訓練 tab ----
+
+  function trainCard(item, date, st) {
+    var cur = trainOn(item.id, date), variant = trainVariant(item, st);
+    return h('div', { class: 'card item train' + (cur ? ' done' : '') },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' },
+          h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, item.icon), item.title),
+          h('div', null,
+            h('span', { class: 'chip' + (item.fixed ? ' on' : '') }, item.fixed ? '已排定' : '可以做'),
+            h('span', { class: 'chip' }, item.time),
+            item.minutes ? h('span', { class: 'muted' }, '約 ' + item.minutes + ' 分') : null,
+            cur ? h('span', { class: 'chip on' }, '✓ 做了' + (cur.minutes ? ' ' + cur.minutes + ' 分' : '') + (cur.version && cur.version !== '標準' ? '（' + cur.version + '）' : '')) : null)),
+        h('button', { class: 'btn small' + (cur ? '' : ' primary'), onclick: function () { state.modal = { type: 'train', task: item, date: date }; renderModal(); } }, cur ? '編輯' : '做了')),
+      variant ? h('div', { class: 'variant' }, h('b', null, variant.label + '：'), variant.text) : null,
+      item.detail && item.detail.length ? h('details', null, h('summary', null, '內容'), h('ul', null, item.detail.map(function (d) { return h('li', null, d); }))) : null);
+  }
+
+  function renderTrain() {
+    var date = state.date, isToday = date === today(), start = trainStart();
+    var menu = trainingMenu(date, start), st = trainStateOn(date);
+    var sum = trainingSummary(date, trainRows());
+    var nodes = [
+      h('div', { class: 'sticky' },
+        h('div', { class: 'row' },
+          h('button', { class: 'btn small', 'aria-label': '前一天', onclick: function () { state.date = addDays(date, -1); render(); } }, '‹'),
+          h('h1', { class: 'grow' }, dateTitle(date) + (isToday ? ' · 今天' : '')),
+          h('button', { class: 'btn small', 'aria-label': '後一天', disabled: date >= today(), onclick: function () { state.date = addDays(date, 1); render(); } }, '›')))
+    ];
+    if (!menu.started) {
+      nodes.push(h('p', { class: 'muted' }, '訓練計畫從 ' + start + ' 開始，這天還沒開始。'));
+    } else {
+      nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・今天有哪些可以做，做了就記，沒做也沒關係。'));
+      if (menu.finished) nodes.push(h('p', { class: 'muted' }, '12 週計畫已走完，先沿用第 12 週的內容；想換新計畫再告訴我。'));
+      nodes.push(h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
+        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), onclick: function () { setTrainState(date, s); } }, s);
+      })));
+      nodes.push(h('p', { class: 'muted' }, st === '疲勞' ? '疲勞：卡片會改給輕鬆版，需要的話直接休息。' : st === '精神好' ? '精神好：有進階版的項目會多給一個選擇。' : '選今天的狀態，建議會跟著調整（可不選）。'));
+      nodes.push(h('div', { class: 'card' }, h('div', null, '本週已做 ', h('b', null, sum.sessions), ' 項、累計 ', h('b', null, sum.minutes), ' 分鐘'), h('div', { class: 'muted' }, '只是記錄，這裡沒有目標，也不影響必做完成率。')));
+      var fixed = menu.items.filter(function (i) { return i.fixed; }), free = menu.items.filter(function (i) { return !i.fixed; });
+      if (fixed.length) { nodes.push(h('h2', null, '已排定')); fixed.forEach(function (i) { nodes.push(trainCard(i, date, st)); }); }
+      if (free.length) { nodes.push(h('h2', null, '可以做')); free.forEach(function (i) { nodes.push(trainCard(i, date, st)); }); }
+      var wkStart = addDays(date, -(weekdayOf(date) - 1)), rows = [];
+      for (var k = 0; k < 7; k++) {
+        var d = addDays(wkStart, k), m = trainingMenu(d, start);
+        rows.push(h('li', null, h('b', null, '週' + WEEKDAY_NAMES[k] + ' '), m.items.filter(function (i) { return i.kind !== 'pelvic'; }).map(function (i) { return i.title; }).join('、') || '休息'));
+      }
+      nodes.push(h('details', { class: 'card' }, h('summary', null, '本週一覽'), h('ul', null, rows)));
+    }
+    var picker = h('input', { type: 'date', id: 'ts-start', value: start });
+    nodes.push(h('details', { class: 'card' }, h('summary', null, '計畫設定'),
+      h('label', { class: 'f', for: 'ts-start' }, '第 1 週的星期一'), picker,
+      h('button', { class: 'btn small', style: 'margin-top:8px', onclick: function () {
+        api('setSetting', { key: 'trainStart', value: picker.value }).then(refresh).catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+      } }, '儲存')));
     return nodes;
   }
 
@@ -585,7 +704,7 @@
     var tab = state.cfg ? state.tab : 'settings';
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
-    else nodes = tab === 'today' ? renderToday() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings();
+    else nodes = tab === 'today' ? renderToday() : tab === 'train' ? renderTrain() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings();
     var focusId = document.activeElement && document.activeElement.id;
     var keepY = window.scrollY;
     view.textContent = '';

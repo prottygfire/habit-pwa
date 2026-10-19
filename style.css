@@ -86,3 +86,11 @@ label.opt input { width: 22px; height: 22px; accent-color: var(--accent); }
 .bar.thin { height: 4px; margin-top: 8px; }
 .icons { display: flex; flex-wrap: wrap; gap: 4px; }
 .ibtn { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 1.2rem; cursor: pointer; }
+
+.item.train { border-left: 6px solid var(--accent); }
+.item.train.done .name { text-decoration: none; color: var(--text); }
+.variant { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--bg); font-size: .875rem; }
+details > summary { cursor: pointer; padding: 6px 0; color: var(--muted); }
+details ul { margin: 4px 0 0; padding-left: 20px; }
+details li { margin: 2px 0; overflow-wrap: anywhere; }
+input[type=date] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); min-height: 44px; }

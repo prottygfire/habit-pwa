@@ -361,6 +361,132 @@ function buildPlanText(kind, date, goals) {
   return lines.join('\n');
 }
 
+// ---- Training menu (the 「訓練」 tab): what you CAN do today. Never a to-do: nothing here affects 必做 rates or streaks. ----
+// Sources: Samsung 練跑教練 level 4 (4 weeks, goal 10 km in 1:09:09), the 12-week fitness plan (docx), and the fixed weekly classes.
+// Week 1 starts on `start` (a Monday). Weekday numbers: 1 = Monday ... 7 = Sunday.
+
+var TRAIN_WEEKS = 12;
+var TRAIN_STATES = ['精神好', '普通', '疲勞'];
+
+// Samsung plan: [id, title, km, minutes, quality]. Minutes are the planned durations from the app.
+var RUN_PLAN = [
+  [['run01', '慢跑', 4, 30, false], ['run02', '低強度間歇跑', 2.46, 28, true], ['run03', '慢跑', 4.19, 30, false], ['run04', '慢跑', 6, 45, false]],
+  [['run05', '慢跑', 4.29, 30, false], ['run06', '重複訓練', 1.8, 22, true], ['run07', '慢跑', 5, 38, false], ['run08', '加速跑', 6, 43, true]],
+  [['run09', '慢跑', 6, 44, false], ['run10', '爬坡間歇跑', 0, 20, true], ['run11', '慢跑', 8, 56, false], ['run12', '變速跑', 0, 40, true]],
+  [['run13', '慢跑', 8, 56, false], ['run14', '重複訓練', 2.8, 31, true], ['run15', '加速跑', 8, 57, true]]
+];
+
+// 12-week plan progress table (weeks 1-12): Monday Zone 2 minutes, long Zone 2 minutes (the plan's Saturday).
+var Z2_MINUTES = [45, 45, 50, 50, 50, 55, 55, 60, 60, 60, 60, 60];
+var LONG_MINUTES = [60, 60, 60, 60, 70, 70, 75, 75, 75, 80, 90, 75];
+
+function hiitText_(week) {
+  if (week <= 4) return '4 × 3 分鐘，每組後輕鬆 2 分鐘（高強度累積 12 分）';
+  if (week <= 8) return '5 × 3 分鐘，每組後輕鬆 2 分鐘（高強度累積 15 分）';
+  if (week <= 11) return '4 × 4 分鐘，每組後輕鬆 2–3 分鐘（高強度累積 16 分）';
+  return '4 × 3 分鐘，恢復 2 分鐘（減量週）';
+}
+
+var STRENGTH_LOWER = ['腿推或深蹲　4 × 6–10', '羅馬尼亞硬舉　3 × 8–12', '保加利亞分腿蹲　3 × 每側 8–12（先在無痛範圍）', '臀推　3 × 10–15', '腿彎舉　3 × 12–15', '小腿提踵　3 × 15–20（小腿不適就減量）', '靠牆靜蹲　2 × 45–90 秒'];
+var STRENGTH_UPPER = ['臥推或伏地挺身　3 × 8–12', '坐姿划船　3 × 10–15', '高位下拉　3 × 10–15', '肩推　3 × 8–12', '臀橋　3 × 15–20（頂端停 1–2 秒）', 'Pallof press　3 × 每側 12', 'Dead bug　3 × 每側 10', '臀橋等長　2 × 30–45 秒'];
+var CORE_MOVES = ['Plank　3 × 45–60 秒', 'Side plank　3 × 每側 30–45 秒', 'Dead bug　3 × 每側 10', 'Pallof press　3 × 每側 12'];
+var PELVIC_MOVES = ['慢收縮：輕到中等力收縮 5 秒、完全放鬆 5 秒，共 8 次（正常呼吸，不憋氣）', '快速收縮：收 1 秒、放 1 秒，共 10 次', '腹式呼吸與放鬆 1–2 分鐘', '若有疼痛、排尿不適或會陰緊繃，先不要加量，請專業人員評估'];
+var HIP_MOVES = ['髖屈肌伸展（弓箭步）　每側 30–45 秒', '4 字（鴿式）伸展　每側 30–45 秒', '90/90 髖轉換　8 次', '全程不痛、不彈震，呼吸放鬆'];
+
+function trainItem_(id, kind, title, icon, minutes, detail, easy, up, extra) {
+  var o = { id: id, kind: kind, title: title, icon: icon, minutes: minutes, detail: detail, easy: easy, up: up || '', fixed: false, time: '白天' };
+  for (var k in (extra || {})) o[k] = extra[k];
+  return o;
+}
+
+function runItem_(r) {
+  var label = r[1] + (r[2] ? ' ' + r[2] + ' 公里' : '') + '・' + r[3] + ' 分';
+  var easyText = r[4] ? '身體累就改成 20–30 分鐘輕鬆慢跑或快走，或直接休息' : '身體累就縮短到 20–30 分鐘，或改快走';
+  var detail = ['三星練跑教練・' + label, r[4] ? '高強度段以 RPE 8／10 為準，不是全力衝刺' : '輕鬆配速（RPE 3–4／10），要能完整說完一句話'];
+  return trainItem_(r[0], 'run', label, '🏃', r[3], detail, easyText, '', { planned: r[3], isRun: true });
+}
+
+function strengthItem_(week) {
+  var lower = week % 2 === 1;
+  return trainItem_(lower ? 'strength-lower' : 'strength-upper', 'strength', '重訓：' + (lower ? '下肢肌力＋肌耐力' : '上肢＋臀髖＋核心'), '🏋️', 60,
+    (lower ? STRENGTH_LOWER : STRENGTH_UPPER).concat(['RPE 7–8，保留 2–3 次餘力；髖緊就縮小動作幅度']),
+    '每個動作減成 2 組，或只做伸展與活動度', '主要動作各多做 1 組，仍保留 2–3 次餘力', { fixed: true, time: '晚上' });
+}
+
+function yogaItem_() {
+  return trainItem_('yoga', 'yoga', '瑜珈課', '🧘', 60, ['固定課程'], '', '', { fixed: true, time: '晚上' });
+}
+
+function coreItem_() { return trainItem_('core', 'core', '核心 10 分', '🔥', 10, CORE_MOVES, '每項 2 組', '每項多做 1 組'); }
+function pelvicItem_() { return trainItem_('pelvic', 'pelvic', '骨盆底控制與呼吸', '🫁', 5, PELVIC_MOVES, '只做腹式呼吸放鬆', ''); }
+function hipItem_() { return trainItem_('hip', 'mobility', '髖部放鬆 5 分', '🤸', 5, HIP_MOVES, '', ''); }
+function walkItem_() { return trainItem_('walk', 'walk', '輕鬆走路 20–40 分', '🚶', 30, ['恢復日：慢慢走，不追速度'], '', ''); }
+
+function cardioItems_(week, slotIdx) {
+  // slotIdx: 0 Monday, 1 Wednesday, 2 Friday, 3 Sunday.
+  if (week <= 4) {
+    var r = RUN_PLAN[week - 1][slotIdx];
+    return r ? [runItem_(r)] : [];
+  }
+  if (slotIdx === 0) {
+    return [trainItem_('run-z2', 'run', 'Zone 2 慢跑 ' + Z2_MINUTES[week - 1] + ' 分', '🏃', Z2_MINUTES[week - 1],
+      ['輕鬆配速（RPE 3–4／10），能完整說句子', '沒有飛輪／橢圓機就用慢跑或快走'], '縮短到 30 分鐘，或改快走', '', { planned: Z2_MINUTES[week - 1], isRun: true })];
+  }
+  if (slotIdx === 1) {
+    return [trainItem_('run-hiit', 'run', '間歇跑', '⚡', 40,
+      ['熱身 10 分鐘（逐步加速）', hiitText_(week), '高強度段 RPE 8／10，不是全力衝刺；恢復段 RPE 2–3', '收操 5–10 分鐘'], '改成 20–40 分鐘輕鬆有氧，或休息（前晚沒睡好、腿很痠、疲勞高時）', '', { planned: 40, isRun: true })];
+  }
+  if (slotIdx === 3) {
+    var items = [trainItem_('run-long', 'run', '長時間 Zone 2 ' + LONG_MINUTES[week - 1] + ' 分', '🏃', LONG_MINUTES[week - 1],
+      ['輕鬆配速（RPE 3–4／10）', '結束時應該還有餘力，不是耗竭', '前一晚做了下肢重訓的話，腿痠就縮短'], '縮短到 40 分鐘，或改快走', '', { planned: LONG_MINUTES[week - 1], isRun: true })];
+    if (week === 5) items.push(trainItem_('test10k', 'run', '等級測試：跑 10 公里（目標 1:09:09）', '🏁', 70, ['三星練跑教練第 4 級的測試', '準備好再跑，沒有時間壓力'], '改天再測', '', { planned: 70, isRun: true }));
+    return items;
+  }
+  return [];
+}
+
+// -> {week, started, finished, items:[...]} for one date. start: 'YYYY-MM-DD' of week 1's Monday.
+function trainingMenu(date, start) {
+  var diff = daysBetween(start, date);
+  if (diff < 0) return { week: 0, started: false, finished: false, items: [] };
+  var raw = Math.floor(diff / 7) + 1;
+  var week = Math.min(raw, TRAIN_WEEKS), wd = weekdayOf(date), items = [];
+  if (wd === 1) items = cardioItems_(week, 0).concat([coreItem_(), pelvicItem_()]);
+  else if (wd === 2) items = [hipItem_(), pelvicItem_()];
+  else if (wd === 3) items = cardioItems_(week, 1).concat([yogaItem_()]);
+  else if (wd === 4) items = [yogaItem_(), walkItem_(), hipItem_(), pelvicItem_()];
+  else if (wd === 5) items = cardioItems_(week, 2).concat([coreItem_(), pelvicItem_()]);
+  else if (wd === 6) items = [strengthItem_(week)];
+  else items = cardioItems_(week, 3).concat([pelvicItem_()]);
+  return { week: week, started: true, finished: raw > TRAIN_WEEKS, items: items };
+}
+
+// What to show for an item given today's state (精神好 / 普通 / 疲勞).
+function trainVariant(item, state) {
+  if (state === '疲勞' && item.easy) return { label: '輕鬆版', text: item.easy };
+  if (state === '精神好' && item.up) return { label: '進階版', text: item.up };
+  return null;
+}
+
+// Plain facts for the week containing `date`: sessions done and minutes. trainLogs: [{date, item, minutes}].
+function trainingSummary(date, trainLogs) {
+  var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), sessions = 0, minutes = 0;
+  for (var i = 0; i < trainLogs.length; i++) {
+    var l = trainLogs[i];
+    if (l.item === '_state' || l.date < start || l.date > end) continue;
+    sessions++;
+    minutes += Number(l.minutes) || 0;
+  }
+  return { sessions: sessions, minutes: minutes, start: start, end: end };
+}
+
+// One line for the morning Telegram message. Pelvic-floor items never go to Telegram.
+function buildTrainingLine(date, start) {
+  var m = trainingMenu(date, start);
+  var titles = m.items.filter(function (t) { return t.kind !== 'pelvic'; }).map(function (t) { return t.title; });
+  return titles.length ? '🏃 今天可以練（不強制）：' + titles.join('、') : '';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     addDays: addDays, weekdayOf: weekdayOf, daysBetween: daysBetween, monthKey: monthKey, quarterKey: quarterKey,
@@ -369,6 +495,8 @@ if (typeof module !== 'undefined' && module.exports) {
     dayStats: dayStats, bonusStats: bonusStats, taskStreak: taskStreak, overallStreak: overallStreak,
     dimensionRates: dimensionRates, dailyRates: dailyRates, periodExtras: periodExtras, decideReminder: decideReminder,
     buildReminderText: buildReminderText, buildReminderKeyboard: buildReminderKeyboard, decidePeriodic: decidePeriodic,
-    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, iconOf: iconOf, SLOTS: SLOTS
+    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, iconOf: iconOf, SLOTS: SLOTS,
+    trainingMenu: trainingMenu, trainVariant: trainVariant, trainingSummary: trainingSummary,
+    buildTrainingLine: buildTrainingLine, TRAIN_STATES: TRAIN_STATES
   };
 }

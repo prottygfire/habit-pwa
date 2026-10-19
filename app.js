@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-19 v5';
+  var VERSION = '2026-10-19 v6';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -223,22 +223,32 @@
   function optionsModal(m, c) {
     var t = m.task, date = m.date;
     var done = isDone(t, date, c.idx);
-    var picked = noteOn(t, date, c.idx).split('、').filter(function (x) { return x; });
-    var extras = picked.filter(function (x) { return t.options.indexOf(x) < 0; });
+    var picked = parseNote(noteOn(t, date, c.idx)), pickedMap = {};
+    picked.forEach(function (p) { pickedMap[p.base] = p.count; });
+    var bases = t.options.map(function (o) { return parseOption(o).base; });
+    var extras = picked.filter(function (p) { return bases.indexOf(p.base) < 0; }).map(function (p) { return noteItem(p.base, p.count); });
     var form = h('form', { onsubmit: function (ev) {
       ev.preventDefault();
-      var chosen = Array.prototype.filter.call(form.querySelectorAll('input[name=opt]'), function (x) { return x.checked; }).map(function (x) { return x.value; });
+      var chosen = [];
+      t.options.forEach(function (o, i) {
+        if (!form.elements['opt' + i].checked) return;
+        chosen.push(noteItem(parseOption(o).base, parseInt(form.elements['cnt' + i].value, 10) || 0));
+      });
       var other = form.elements.other.value.split(/[、,，]/).map(function (x) { return x.trim(); }).filter(function (x) { return x; });
       var all = chosen.concat(other);
       if (!all.length) { toast('請至少選一項，或在「其他」填寫'); return; }
       state.modal = null; renderModal();
       checkTask(t, date, '標準', all.join('、'));
     } },
-      h('p', { class: 'muted' }, '勾選你今天做了什麼（至少一項就算完成）'),
-      t.options.map(function (o) {
-        return h('label', { class: 'opt' }, h('input', { type: 'checkbox', name: 'opt', value: o, checked: picked.indexOf(o) >= 0 }), h('span', null, o));
+      h('p', { class: 'muted' }, '勾選你今天做了什麼，次數可以自己改（選填；至少一項就算完成）'),
+      t.options.map(function (o, i) {
+        var p = parseOption(o), on = pickedMap[p.base] !== undefined, cnt = on ? pickedMap[p.base] : p.count;
+        return h('div', { class: 'opt' },
+          h('label', { class: 'optl' }, h('input', { type: 'checkbox', name: 'opt' + i, checked: on }), h('span', null, p.base)),
+          h('input', { class: 'cnt', type: 'number', name: 'cnt' + i, min: '0', max: '9999', inputmode: 'numeric', placeholder: '次數', value: cnt || '', 'aria-label': p.base + ' 次數',
+            oninput: function (ev) { if (ev.target.value) form.elements['opt' + i].checked = true; } }));
       }),
-      h('label', { class: 'f', for: 'm-other' }, '其他（選填，多項用頓號分隔）'),
+      h('label', { class: 'f', for: 'm-other' }, '其他（選填，多項用頓號分隔，可寫「跳繩*100」）'),
       h('input', { type: 'text', id: 'm-other', name: 'other', value: extras.join('、'), maxlength: '60' }),
       h('div', { class: 'row', style: 'margin-top:14px' },
         h('button', { class: 'btn primary grow', type: 'submit' }, done ? '更新' : '完成'),
@@ -368,11 +378,10 @@
       h('div', { class: 'bar', style: 'margin-top:8px' }, h('i', { style: 'width:' + Math.round(Math.min(1, p.done / p.target) * 100) + '%' })));
   }
 
-  // One block per time slot; inside a block 必做 comes first, then 加分.
+  // One block per time slot, in the sheet's 排序 order (real-life order: 飯前 before 飯後, even when 飯前 is 加分).
   function groupBySlot(items, c, date, nodes) {
     SLOT_ORDER.forEach(function (slot) {
       var list = items.filter(function (t) { return (t.slot || '不限') === slot; });
-      list.sort(function (x, y) { return (isBonus(x) ? 1 : 0) - (isBonus(y) ? 1 : 0); });
       if (!list.length) return;
       nodes.push(h('h2', null, slot === '不限' ? '全天' : slot));
       list.forEach(function (t) { nodes.push(taskItem(t, c, date)); });
@@ -549,17 +558,22 @@
   function renderTasks() {
     if (state.editing) return [h('h1', null, state.editing.id ? '編輯任務' : '新增任務'), renderTaskForm(state.editing)];
     var nodes = [h('div', { class: 'row' }, h('h1', { class: 'grow' }, '任務'), h('button', { class: 'btn primary', onclick: function () { state.editing = blankTask(); render(); } }, '＋ 新增'))];
-    state.data.tasks.forEach(function (t) {
+    state.data.tasks.forEach(function (t, i, all) {
       var extras = (hasOptions(t) ? '・' + t.options.length + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
-      nodes.push(h('div', { class: 'card item row ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
-        h('div', { class: 'grow' }, nameLine(t),
+      function move(dir) { api('moveTask', { id: t.id, dir: dir }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能調整順序' : e.message); }); }
+      nodes.push(h('div', { class: 'card item ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
+        h('div', null, nameLine(t),
           h('div', null, h('span', { class: 'chip dc' }, t.dim), h('span', { class: 'chip' + (isBonus(t) ? '' : ' on') }, t.cls || '必做'),
             h('span', { class: 'muted' }, freqText(t) + (t.slot !== '不限' ? '・' + t.slot : '') + (t.remind ? '・提醒' : '') + extras + (t.active ? '' : '・已暫停')))),
-        h('button', { class: 'btn small', onclick: function () { state.editing = JSON.parse(JSON.stringify(t)); render(); } }, '編輯'),
-        h('button', { class: 'btn small danger', onclick: function () {
-          if (!confirm('刪除「' + t.name + '」？打卡紀錄會保留。')) return;
-          api('deleteTask', { id: t.id }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能刪除' : e.message); });
-        } }, '刪除')));
+        h('div', { class: 'row', style: 'margin-top:8px' },
+          h('button', { class: 'btn small', 'aria-label': t.name + ' 往前移', disabled: i === 0, onclick: function () { move(-1); } }, '▲'),
+          h('button', { class: 'btn small', 'aria-label': t.name + ' 往後移', disabled: i === all.length - 1, onclick: function () { move(1); } }, '▼'),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'btn small', onclick: function () { state.editing = JSON.parse(JSON.stringify(t)); render(); } }, '編輯'),
+          h('button', { class: 'btn small danger', onclick: function () {
+            if (!confirm('刪除「' + t.name + '」？打卡紀錄會保留。')) return;
+            api('deleteTask', { id: t.id }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能刪除' : e.message); });
+          } }, '刪除'))));
     });
     if (!state.data.tasks.length) nodes.push(h('p', { class: 'muted' }, '還沒有任務。'));
     return nodes;
@@ -657,7 +671,7 @@
     var names = Object.keys(x.options).sort(function (a, b) { return x.options[b] - x.options[a]; });
     nodes.push(h('div', { class: 'card' },
       h('div', null, '進階 ', h('b', null, x.advanced), ' 次・加分 ', h('b', null, x.bonus), ' 次'),
-      names.length ? h('div', { style: 'margin-top:8px' }, names.map(function (n) { return h('span', { class: 'chip on' }, n + ' ' + x.options[n]); })) : h('div', { class: 'muted' }, '飯後運動等有選項的任務，勾選的動作會在這裡累計。')));
+      names.length ? h('div', { style: 'margin-top:8px' }, names.map(function (n) { return h('span', { class: 'chip on' }, n + ' ' + x.options[n] + ' 天' + (x.reps[n] ? '・共 ' + x.reps[n] : '')); })) : h('div', { class: 'muted' }, '飯後運動等有選項的任務，勾選的動作會在這裡累計。')));
     var trend = dailyRates(c.tasks, range.start, range.end < t0 ? range.end : t0, c.idx, c.leave);
     nodes.push(h('h2', null, '每日必做完成率趨勢'));
     nodes.push(h('div', { class: 'card' }, h('div', { class: 'trend', role: 'img', 'aria-label': '每日完成率趨勢' }, trend.map(function (r) {

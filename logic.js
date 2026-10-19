@@ -265,16 +265,32 @@ function dailyRates(tasks, start, end, idx, leave) {
 }
 
 // Extras for a period: how many 進階 days, how many 加分 check-ins, and how often each picked option was done.
+// Option labels can carry a default amount ('深蹲*30'); a log note stores what was really done ('深蹲*25').
+function parseOption(label) {
+  var m = /^(.*?)\s*[*×]\s*(\d+)$/.exec(String(label).trim());
+  return m ? { base: m[1].trim(), count: parseInt(m[2], 10) } : { base: String(label).trim(), count: 0 };
+}
+
+function noteItem(base, count) { return count > 0 ? base + '*' + count : base; }
+
+function parseNote(note) {
+  return String(note || '').split('、').filter(function (x) { return x; }).map(parseOption);
+}
+
+// Extras for a period: 進階 days, 加分 check-ins, per-option days (options) and summed amounts (reps), grouped by option name.
 function periodExtras(tasks, logs, start, end) {
   var byId = {}, i;
   for (i = 0; i < tasks.length; i++) byId[tasks[i].id] = tasks[i];
-  var out = { advanced: 0, bonus: 0, options: {} };
+  var out = { advanced: 0, bonus: 0, options: {}, reps: {} };
   for (i = 0; i < logs.length; i++) {
     var l = logs[i], t = byId[l.taskId];
     if (l.date < start || l.date > end || !t) continue;
     if (l.tier === '進階') out.advanced++;
     if (isBonus(t) && !isAccumFreq(t.freq)) out.bonus++;
-    if (l.note) l.note.split('、').forEach(function (o) { if (o) out.options[o] = (out.options[o] || 0) + 1; });
+    parseNote(l.note).forEach(function (p) {
+      out.options[p.base] = (out.options[p.base] || 0) + 1;
+      if (p.count > 0) out.reps[p.base] = (out.reps[p.base] || 0) + p.count;
+    });
   }
   return out;
 }
@@ -495,7 +511,7 @@ if (typeof module !== 'undefined' && module.exports) {
     dayStats: dayStats, bonusStats: bonusStats, taskStreak: taskStreak, overallStreak: overallStreak,
     dimensionRates: dimensionRates, dailyRates: dailyRates, periodExtras: periodExtras, decideReminder: decideReminder,
     buildReminderText: buildReminderText, buildReminderKeyboard: buildReminderKeyboard, decidePeriodic: decidePeriodic,
-    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, iconOf: iconOf, SLOTS: SLOTS,
+    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, parseOption: parseOption, noteItem: noteItem, parseNote: parseNote, iconOf: iconOf, SLOTS: SLOTS,
     trainingMenu: trainingMenu, trainVariant: trainVariant, trainingSummary: trainingSummary,
     buildTrainingLine: buildTrainingLine, TRAIN_STATES: TRAIN_STATES
   };

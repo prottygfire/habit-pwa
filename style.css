@@ -62,8 +62,10 @@ nav#tabs button.on { color: var(--accent); font-weight: 700; }
 textarea { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font: inherit; color: inherit; resize: vertical; }
 .overlay { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; justify-content: center; }
 .sheet { width: 100%; max-width: 640px; max-height: 88vh; overflow-y: auto; background: var(--card); border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
-label.opt { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid var(--line); cursor: pointer; }
-label.opt input { width: 22px; height: 22px; accent-color: var(--accent); }
+.opt { display: flex; align-items: center; gap: 12px; min-height: 52px; border-bottom: 1px solid var(--line); }
+.optl { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; cursor: pointer; overflow-wrap: anywhere; }
+.optl input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
+.opt .cnt { width: 84px; flex: none; text-align: center; }
 .btn.tier { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; margin: 6px 0; text-align: left; }
 .btn.tier.on { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .btn.tier span { overflow-wrap: anywhere; text-align: right; }

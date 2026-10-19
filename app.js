@@ -3,6 +3,7 @@
 (function () {
   'use strict';
 
+  var VERSION = '2026-10-19 v3';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -563,6 +564,7 @@
       h('input', { type: 'password', id: 's-secret', name: 'secret', value: cfg.secret, required: true, autocomplete: 'off' }),
       h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:12px;width:100%' }, '儲存並同步'));
     var nodes = [h('h1', null, state.cfg ? '設定' : '第一次使用：連接你的資料庫'), form];
+    nodes.push(h('p', { class: 'muted' }, '程式版本：' + VERSION));
     if (state.cfg) {
       nodes.push(h('p', { class: 'muted' }, '尚未送出的打卡：' + state.queue.length + ' 筆'));
       nodes.push(h('div', { class: 'row' },

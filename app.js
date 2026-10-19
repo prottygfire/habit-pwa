@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-19 v4';
+  var VERSION = '2026-10-19 v5';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -30,6 +30,8 @@
     queue: LS.get('habit.queue', []),
     tab: 'today',
     date: localDate(new Date()),
+    trainDate: localDate(new Date()),
+    openedOn: localDate(new Date()),
     planMode: 'month',
     editing: null,
     modal: null,
@@ -410,7 +412,7 @@
   // ---- 訓練 tab ----
 
   function trainCard(item, date, st) {
-    var cur = trainOn(item.id, date), variant = trainVariant(item, st);
+    var cur = trainOn(item.id, date), variant = trainVariant(item, st), future = date > today();
     return h('div', { class: 'card item train' + (cur ? ' done' : '') },
       h('div', { class: 'row' },
         h('div', { class: 'grow' },
@@ -420,29 +422,30 @@
             h('span', { class: 'chip' }, item.time),
             item.minutes ? h('span', { class: 'muted' }, '約 ' + item.minutes + ' 分') : null,
             cur ? h('span', { class: 'chip on' }, '✓ 做了' + (cur.minutes ? ' ' + cur.minutes + ' 分' : '') + (cur.version && cur.version !== '標準' ? '（' + cur.version + '）' : '')) : null)),
-        h('button', { class: 'btn small' + (cur ? '' : ' primary'), onclick: function () { state.modal = { type: 'train', task: item, date: date }; renderModal(); } }, cur ? '編輯' : '做了')),
+        future ? null : h('button', { class: 'btn small' + (cur ? '' : ' primary'), onclick: function () { state.modal = { type: 'train', task: item, date: date }; renderModal(); } }, cur ? '編輯' : '做了')),
       variant ? h('div', { class: 'variant' }, h('b', null, variant.label + '：'), variant.text) : null,
       item.detail && item.detail.length ? h('details', null, h('summary', null, '內容'), h('ul', null, item.detail.map(function (d) { return h('li', null, d); }))) : null);
   }
 
   function renderTrain() {
-    var date = state.date, isToday = date === today(), start = trainStart();
+    var date = state.trainDate, isToday = date === today(), future = date > today(), start = trainStart();
     var menu = trainingMenu(date, start), st = trainStateOn(date);
     var sum = trainingSummary(date, trainRows());
     var nodes = [
       h('div', { class: 'sticky' },
         h('div', { class: 'row' },
-          h('button', { class: 'btn small', 'aria-label': '前一天', onclick: function () { state.date = addDays(date, -1); render(); } }, '‹'),
-          h('h1', { class: 'grow' }, dateTitle(date) + (isToday ? ' · 今天' : '')),
-          h('button', { class: 'btn small', 'aria-label': '後一天', disabled: date >= today(), onclick: function () { state.date = addDays(date, 1); render(); } }, '›')))
+          h('button', { class: 'btn small', 'aria-label': '前一天', onclick: function () { state.trainDate = addDays(date, -1); render(); } }, '‹'),
+          h('h1', { class: 'grow' }, dateTitle(date) + (isToday ? ' · 今天' : future ? ' · 預覽' : '')),
+          h('button', { class: 'btn small', 'aria-label': '後一天', disabled: daysBetween(today(), date) >= 14, onclick: function () { state.trainDate = addDays(date, 1); render(); } }, '›')))
     ];
+    if (future) nodes.push(h('p', { class: 'muted' }, '這是預覽，到了那天才能記錄。'));
     if (!menu.started) {
       nodes.push(h('p', { class: 'muted' }, '訓練計畫從 ' + start + ' 開始，這天還沒開始。'));
     } else {
-      nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・今天有哪些可以做，做了就記，沒做也沒關係。'));
+      nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・' + (future ? '這天' : '今天') + '有哪些可以做，做了就記，沒做也沒關係。'));
       if (menu.finished) nodes.push(h('p', { class: 'muted' }, '12 週計畫已走完，先沿用第 12 週的內容；想換新計畫再告訴我。'));
       nodes.push(h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
-        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), onclick: function () { setTrainState(date, s); } }, s);
+        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s);
       })));
       nodes.push(h('p', { class: 'muted' }, st === '疲勞' ? '疲勞：卡片會改給輕鬆版，需要的話直接休息。' : st === '精神好' ? '精神好：有進階版的項目會多給一個選擇。' : '選今天的狀態，建議會跟著調整（可不選）。'));
       nodes.push(h('div', { class: 'card' }, h('div', null, '本週已做 ', h('b', null, sum.sessions), ' 項、累計 ', h('b', null, sum.minutes), ' 分鐘'), h('div', { class: 'muted' }, '只是記錄，這裡沒有目標，也不影響必做完成率。')));
@@ -723,7 +726,12 @@
   });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.modal) closeModal(); });
   window.addEventListener('online', refresh);
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) { state.date = state.date > today() ? today() : state.date; refresh(); } });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    if (state.openedOn !== today()) { state.openedOn = today(); state.date = today(); state.trainDate = today(); }
+    state.date = state.date > today() ? today() : state.date;
+    refresh();
+  });
   if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(function () { /* offline shell is optional */ });
 
   render();

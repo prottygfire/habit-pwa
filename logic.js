@@ -1,9 +1,12 @@
 // GENERATED from shared/logic.js by build.py. Edit the source, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
+//
+// Task: {id, name, dim, freq, param, slot, remind, active, link, since, cls ('必做'|'加分'), tierUp, tierDown, options[]}
+// Log:  {date, taskId, tier, minutes, note}
 
-var FIXED_FREQS = ['daily', 'weekdays'];
 var COUNT_FREQS = ['weekly_n', 'monthly_n', 'quarterly_n'];
+var MIN_FREQS = ['weekly_min', 'monthly_min'];
 var OVERALL_THRESHOLD = 0.8;
 var LOOKBACK_DAYS = 400;
 var LOOKBACK_PERIODS = 60;
@@ -62,28 +65,39 @@ function isQuarterStart(s) {
 }
 
 function isCountFreq(freq) { return COUNT_FREQS.indexOf(freq) >= 0; }
+function isMinFreq(freq) { return MIN_FREQS.indexOf(freq) >= 0; }
+// Accumulating tasks (N times or N minutes per period) live in their own list, not the daily checklist.
+function isAccumFreq(freq) { return isCountFreq(freq) || isMinFreq(freq); }
+function isBonus(task) { return task.cls === '加分'; }
 
-// The period [start, end] a count-type task is measured over, around date s.
+// The period [start, end] an accumulating task is measured over, around date s.
 function periodRange(freq, s) {
   var d = toDate_(s), y = d.getUTCFullYear(), m = d.getUTCMonth();
-  if (freq === 'weekly_n') {
+  var base = { weekly_min: 'weekly_n', monthly_min: 'monthly_n' }[freq] || freq;
+  if (base === 'weekly_n') {
     var start = addDays(s, -(weekdayOf(s) - 1));
     return { start: start, end: addDays(start, 6) };
   }
-  if (freq === 'monthly_n') {
+  if (base === 'monthly_n') {
     return { start: fmtDate_(new Date(Date.UTC(y, m, 1))), end: fmtDate_(new Date(Date.UTC(y, m + 1, 0))) };
   }
-  if (freq === 'quarterly_n') {
+  if (base === 'quarterly_n') {
     var q = Math.floor(m / 3) * 3;
     return { start: fmtDate_(new Date(Date.UTC(y, q, 1))), end: fmtDate_(new Date(Date.UTC(y, q + 3, 0))) };
   }
-  throw new Error('不是次數型頻率：' + freq);
+  throw new Error('不是累計型頻率：' + freq);
 }
 
-// logs: [{date, taskId}] -> lookup set. leave: ['YYYY-MM-DD'] -> lookup set.
+// logs -> lookup. 'date|id' = checked, 'm|date|id' = minutes, 't|…' = tier, 'n|…' = note. leave -> lookup set.
 function indexLogs(logs) {
   var idx = {};
-  for (var i = 0; i < logs.length; i++) idx[logs[i].date + '|' + logs[i].taskId] = true;
+  for (var i = 0; i < logs.length; i++) {
+    var l = logs[i], k = l.date + '|' + l.taskId;
+    idx[k] = true;
+    idx['m|' + k] = Number(l.minutes) || 0;
+    idx['t|' + k] = l.tier || '標準';
+    idx['n|' + k] = l.note || '';
+  }
   return idx;
 }
 
@@ -94,6 +108,9 @@ function indexLeave(days) {
 }
 
 function isDone(task, date, idx) { return idx[date + '|' + task.id] === true; }
+function minutesOn(task, date, idx) { return idx['m|' + date + '|' + task.id] || 0; }
+function tierOn(task, date, idx) { return isDone(task, date, idx) ? idx['t|' + date + '|' + task.id] : ''; }
+function noteOn(task, date, idx) { return idx['n|' + date + '|' + task.id] || ''; }
 
 function weekdaysOf_(task) {
   return String(task.param).split(',').map(function (x) { return parseInt(x, 10); });
@@ -104,63 +121,83 @@ function targetOf(task) {
   return n > 0 ? n : 1;
 }
 
-// Is a fixed task on the calendar for this day? Count-type tasks are flexible, so always "scheduled".
+// Is a fixed task on the calendar for this day? Accumulating tasks are flexible, so always "scheduled".
 function isScheduled(task, date) {
   if (!task.active) return false;
   if (task.since && date < task.since) return false;
   if (task.freq === 'daily') return true;
   if (task.freq === 'weekdays') return weekdaysOf_(task).indexOf(weekdayOf(date)) >= 0;
-  return isCountFreq(task.freq);
+  return isAccumFreq(task.freq);
 }
 
-function countDone(task, idx, start, end) {
+// Days checked (count tasks) or minutes logged (minute tasks) inside [start, end].
+function periodTotal(task, idx, start, end) {
   var n = 0;
-  for (var d = start; d <= end; d = addDays(d, 1)) if (isDone(task, d, idx)) n++;
+  for (var d = start; d <= end; d = addDays(d, 1)) {
+    if (!isDone(task, d, idx)) continue;
+    n += isMinFreq(task.freq) ? minutesOn(task, d, idx) : 1;
+  }
   return n;
 }
 
 function progress(task, date, idx) {
   var r = periodRange(task.freq, date);
-  return { done: countDone(task, idx, r.start, r.end), target: targetOf(task), start: r.start, end: r.end };
+  return { done: periodTotal(task, idx, r.start, r.end), target: targetOf(task), start: r.start, end: r.end };
 }
 
-// Show-on-today list: fixed tasks scheduled today; count tasks until their quota is met (or done today).
+// Daily-checklist membership: fixed tasks scheduled today.
 function isDue(task, date, idx) {
   if (!isScheduled(task, date)) return false;
-  if (!isCountFreq(task.freq)) return true;
+  if (!isAccumFreq(task.freq)) return true;
   if (isDone(task, date, idx)) return true;
   var p = progress(task, date, idx);
   return p.done < p.target;
 }
 
-// Nag only when it is worth it: fixed tasks always; count tasks once the days left equal the checks still needed.
+// Nag only for 必做 tasks: fixed ones always; accumulating ones once the remaining days are too few.
 function needsReminder(task, date, idx) {
-  if (!task.remind || !isDue(task, date, idx) || isDone(task, date, idx)) return false;
-  if (!isCountFreq(task.freq)) return true;
+  if (isBonus(task) || !task.remind || !isDue(task, date, idx)) return false;
+  if (!isAccumFreq(task.freq)) return !isDone(task, date, idx);
   var p = progress(task, date, idx);
-  return p.target - p.done >= daysBetween(date, p.end) + 1;
+  var left = p.target - p.done, daysLeft = daysBetween(date, p.end) + 1;
+  if (left <= 0) return false;
+  if (isMinFreq(task.freq)) return daysLeft <= 2 && !isDone(task, date, idx);
+  return left >= daysLeft && !isDone(task, date, idx);
 }
 
-// Completion rate of fixed tasks for one day. Leave days and days with nothing scheduled have rate null.
+function isFixedMust_(t) { return !isAccumFreq(t.freq) && !isBonus(t); }
+
+// Completion rate of 必做 fixed tasks for one day. Leave days and days with nothing scheduled have rate null.
 function dayStats(tasks, date, idx, leave) {
   if (leave[date]) return { leave: true, due: 0, done: 0, rate: null };
   var due = 0, done = 0;
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    if (isCountFreq(t.freq) || !isScheduled(t, date)) continue;
+    if (!isFixedMust_(t) || !isScheduled(t, date)) continue;
     due++;
     if (isDone(t, date, idx)) done++;
   }
   return { leave: false, due: due, done: done, rate: due ? done / due : null };
 }
 
+function bonusStats(tasks, date, idx) {
+  var due = 0, done = 0;
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    if (!isBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, date)) continue;
+    due++;
+    if (isDone(t, date, idx)) done++;
+  }
+  return { due: due, done: done };
+}
+
 function taskStreak(task, date, idx, leave) {
   var n = 0, i;
-  if (isCountFreq(task.freq)) {
+  if (isAccumFreq(task.freq)) {
     var cur = date;
     for (i = 0; i < LOOKBACK_PERIODS; i++) {
       var r = periodRange(task.freq, cur);
-      var met = countDone(task, idx, r.start, r.end) >= targetOf(task);
+      var met = periodTotal(task, idx, r.start, r.end) >= targetOf(task);
       if (met) n++;
       else if (i > 0) break;
       cur = addDays(r.start, -1);
@@ -190,14 +227,14 @@ function overallStreak(tasks, date, idx, leave) {
   return n;
 }
 
-// Per-dimension completion of fixed tasks over [start, min(end, today)].
+// Per-dimension completion of 必做 fixed tasks over [start, min(end, today)].
 function dimensionRates(tasks, start, end, today, idx, leave) {
   var out = {}, last = end < today ? end : today;
   for (var d = start; d <= last; d = addDays(d, 1)) {
     if (leave[d]) continue;
     for (var i = 0; i < tasks.length; i++) {
       var t = tasks[i];
-      if (isCountFreq(t.freq) || !isScheduled(t, d)) continue;
+      if (!isFixedMust_(t) || !isScheduled(t, d)) continue;
       var o = out[t.dim] || (out[t.dim] = { due: 0, done: 0, rate: null });
       o.due++;
       if (isDone(t, d, idx)) o.done++;
@@ -213,37 +250,66 @@ function dailyRates(tasks, start, end, idx, leave) {
   return out;
 }
 
+// Extras for a period: how many 進階 days, how many 加分 check-ins, and how often each picked option was done.
+function periodExtras(tasks, logs, start, end) {
+  var byId = {}, i;
+  for (i = 0; i < tasks.length; i++) byId[tasks[i].id] = tasks[i];
+  var out = { advanced: 0, bonus: 0, options: {} };
+  for (i = 0; i < logs.length; i++) {
+    var l = logs[i], t = byId[l.taskId];
+    if (l.date < start || l.date > end || !t) continue;
+    if (l.tier === '進階') out.advanced++;
+    if (isBonus(t) && !isAccumFreq(t.freq)) out.bonus++;
+    if (l.note) l.note.split('、').forEach(function (o) { if (o) out.options[o] = (out.options[o] || 0) + 1; });
+  }
+  return out;
+}
+
 // ---- Telegram reminders ----
 
-// sent: {morning: true, ...} for today. Returns {send: slotKey|null, tasks: [...]}.
+// sent: {morning: true, ...} for today. Returns {send: slotKey|null, tasks: [...], bonus: n}.
 function decideReminder(date, hhmm, sent, tasks, idx, leave) {
-  if (leave[date]) return { send: null, tasks: [] };
+  if (leave[date]) return { send: null, tasks: [], bonus: 0 };
   var pending = tasks.filter(function (t) { return needsReminder(t, date, idx); });
+  var bonusLeft = bonusStats(tasks, date, idx);
   for (var i = 0; i < SLOTS.length; i++) {
     var s = SLOTS[i];
     if (hhmm < s.at || hhmm >= s.until || sent[s.key]) continue;
     var list = pending;
     if (s.key === 'noon') list = pending.filter(function (t) { return t.slot === '早' || t.slot === '午'; });
-    return list.length ? { send: s.key, tasks: list } : { send: null, tasks: [] };
+    if (!list.length) return { send: null, tasks: [], bonus: 0 };
+    return { send: s.key, tasks: list, bonus: s.key === 'evening' ? bonusLeft.due - bonusLeft.done : 0 };
   }
-  return { send: null, tasks: [] };
+  return { send: null, tasks: [], bonus: 0 };
 }
 
 var SLOT_TITLES = {
-  morning: '☀️ 今日任務',
+  morning: '☀️ 今日必做',
   noon: '🌤 午間提醒，還沒做',
   evening: '🌙 今晚還沒做',
   followup: '⏰ 補提醒，還沒做'
 };
 
-function buildReminderText(slot, tasks, appUrl) {
+function buildReminderText(slot, tasks, appUrl, bonus) {
   var lines = [SLOT_TITLES[slot] + '（' + tasks.length + '）'];
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
     lines.push('• ' + t.name + (t.slot && t.slot !== '不限' ? '（' + t.slot + '）' : ''));
   }
+  if (bonus > 0) lines.push('還有 ' + bonus + ' 項加分');
   if (appUrl) lines.push(appUrl);
   return lines.join('\n');
+}
+
+// Inline buttons: a plain task can be ticked from Telegram; tasks that need choices open the app instead.
+function buildReminderKeyboard(tasks, date, appUrl) {
+  var rows = [];
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i], plain = !isAccumFreq(t.freq) && !(t.options && t.options.length);
+    if (plain) rows.push([{ text: '✓ ' + t.name, callback_data: 'c|' + t.id + '|' + date }]);
+    else if (appUrl) rows.push([{ text: t.name + ' →', url: appUrl }]);
+  }
+  return rows;
 }
 
 // One periodic message per tick: quarter start (also covers month plan) > month plan > month report.
@@ -254,17 +320,21 @@ function decidePeriodic(date, hhmm, sent) {
   return null;
 }
 
-function buildMonthReport(tasks, date, idx, leave) {
-  var r = { start: monthKey(date) + '-01', end: date };
-  var rates = dimensionRates(tasks, r.start, r.end, date, idx, leave);
-  var lines = ['📊 ' + monthKey(date) + ' 月統計'];
+function buildMonthReport(tasks, date, idx, leave, logs) {
+  var start = monthKey(date) + '-01';
+  var rates = dimensionRates(tasks, start, date, date, idx, leave);
+  var lines = ['📊 ' + monthKey(date) + ' 月統計（必做）'];
   for (var k in rates) lines.push(k + '：' + Math.round(rates[k].rate * 100) + '%（' + rates[k].done + '/' + rates[k].due + '）');
   tasks.forEach(function (t) {
-    if (t.freq === 'monthly_n' && t.active) {
+    if (t.active && (t.freq === 'monthly_n' || t.freq === 'monthly_min')) {
       var p = progress(t, date, idx);
-      lines.push(t.name + '：' + p.done + '/' + p.target);
+      lines.push(t.name + '：' + p.done + '/' + p.target + (isMinFreq(t.freq) ? ' 分' : ''));
     }
   });
+  if (logs) {
+    var x = periodExtras(tasks, logs, start, date);
+    lines.push('進階 ' + x.advanced + ' 次・加分 ' + x.bonus + ' 次');
+  }
   return lines.join('\n');
 }
 
@@ -281,8 +351,9 @@ if (typeof module !== 'undefined' && module.exports) {
     addDays: addDays, weekdayOf: weekdayOf, daysBetween: daysBetween, monthKey: monthKey, quarterKey: quarterKey,
     isLastDayOfMonth: isLastDayOfMonth, isQuarterStart: isQuarterStart, periodRange: periodRange, indexLogs: indexLogs,
     indexLeave: indexLeave, isScheduled: isScheduled, isDue: isDue, progress: progress, needsReminder: needsReminder,
-    dayStats: dayStats, taskStreak: taskStreak, overallStreak: overallStreak, dimensionRates: dimensionRates,
-    dailyRates: dailyRates, decideReminder: decideReminder, buildReminderText: buildReminderText,
-    decidePeriodic: decidePeriodic, buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, SLOTS: SLOTS
+    dayStats: dayStats, bonusStats: bonusStats, taskStreak: taskStreak, overallStreak: overallStreak,
+    dimensionRates: dimensionRates, dailyRates: dailyRates, periodExtras: periodExtras, decideReminder: decideReminder,
+    buildReminderText: buildReminderText, buildReminderKeyboard: buildReminderKeyboard, decidePeriodic: decidePeriodic,
+    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, SLOTS: SLOTS
   };
 }

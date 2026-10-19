@@ -1,5 +1,5 @@
 // App-shell cache so the PWA opens offline. API calls (other origin) are never cached.
-var CACHE = 'habit-shell-v1';
+var CACHE = 'habit-shell-v2';
 var SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', function (e) {

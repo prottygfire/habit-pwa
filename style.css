@@ -67,3 +67,22 @@ label.opt input { width: 22px; height: 22px; accent-color: var(--accent); }
 .btn.tier { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; margin: 6px 0; text-align: left; }
 .btn.tier.on { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .btn.tier span { overflow-wrap: anywhere; text-align: right; }
+
+/* Dimension colours: .d0..d5 follow the order 健康 財商 學習 情緒 工作 娛樂 */
+:root { --d0: #2a8a5c; --d1: #b27a0e; --d2: #2f6fc4; --d3: #a8478f; --d4: #566b7d; --d5: #cc5a22; --dc-ink: #ffffff; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --d0: #4cc38a; --d1: #f0b84a; --d2: #6aa3f0; --d3: #d783c4; --d4: #92a6b8; --d5: #f29058; --dc-ink: #10150f; }
+}
+.d0 { --dc: var(--d0); } .d1 { --dc: var(--d1); } .d2 { --dc: var(--d2); } .d3 { --dc: var(--d3); } .d4 { --dc: var(--d4); } .d5 { --dc: var(--d5); }
+.item[class*=" d"], .card[class*=" d"] { border-left: 6px solid var(--dc); }
+.item[class*=" d"] .check { border-color: var(--dc); }
+.item[class*=" d"].done .check { background: var(--dc); border-color: var(--dc); color: var(--dc-ink); }
+.chip.dc { border-color: var(--dc); color: var(--dc); }
+.bar > i { background: var(--dc, var(--accent)); }
+.item.bonus { background: transparent; border-style: dashed; border-left-style: solid; }
+.ico { margin-right: 6px; }
+.sticky { position: sticky; top: 0; z-index: 4; background: var(--bg); margin: -16px -16px 8px; padding: 12px 16px 8px; }
+.sticky h1 { margin: 0; font-size: 1.1rem; }
+.bar.thin { height: 4px; margin-top: 8px; }
+.icons { display: flex; flex-wrap: wrap; gap: 4px; }
+.ibtn { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 1.2rem; cursor: pointer; }

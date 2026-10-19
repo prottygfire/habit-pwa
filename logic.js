@@ -70,6 +70,20 @@ function isMinFreq(freq) { return MIN_FREQS.indexOf(freq) >= 0; }
 function isAccumFreq(freq) { return isCountFreq(freq) || isMinFreq(freq); }
 function isBonus(task) { return task.cls === '加分'; }
 
+var DIM_ICONS = { '健康': '💪', '財商': '💰', '學習': '📖', '情緒': '💭', '工作': '💼', '娛樂': '🎮' };
+var ICON_RULES = [
+  [/跑/, '🏃'], [/飯後|散步/, '🚶'], [/飯前/, '🤸'], [/步/, '👟'], [/水/, '💧'], [/睡|就寢/, '😴'], [/保養/, '🧴'],
+  [/拉筋|伸展/, '🙆'], [/瑜珈/, '🧘'], [/死蟲|臀/, '🏋️'], [/push|ab roll|伏地|重訓|蹲/i, '💪'],
+  [/記帳|帳/, '💰'], [/日記|寫/, '✍️'], [/讀|書/, '📖']
+];
+
+// Emoji shown for a task: the one it was given, else a guess from its name, else its dimension's.
+function iconOf(task) {
+  if (task.icon) return task.icon;
+  for (var i = 0; i < ICON_RULES.length; i++) if (ICON_RULES[i][0].test(task.name || '')) return ICON_RULES[i][1];
+  return DIM_ICONS[task.dim] || '✅';
+}
+
 // The period [start, end] an accumulating task is measured over, around date s.
 function periodRange(freq, s) {
   var d = toDate_(s), y = d.getUTCFullYear(), m = d.getUTCMonth();
@@ -294,7 +308,7 @@ function buildReminderText(slot, tasks, appUrl, bonus) {
   var lines = [SLOT_TITLES[slot] + '（' + tasks.length + '）'];
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    lines.push('• ' + t.name + (t.slot && t.slot !== '不限' ? '（' + t.slot + '）' : ''));
+    lines.push('• ' + (t.icon ? t.icon + ' ' : '') + t.name + (t.slot && t.slot !== '不限' ? '（' + t.slot + '）' : ''));
   }
   if (bonus > 0) lines.push('還有 ' + bonus + ' 項加分');
   if (appUrl) lines.push(appUrl);
@@ -306,8 +320,9 @@ function buildReminderKeyboard(tasks, date, appUrl) {
   var rows = [];
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i], plain = !isAccumFreq(t.freq) && !(t.options && t.options.length);
-    if (plain) rows.push([{ text: '✓ ' + t.name, callback_data: 'c|' + t.id + '|' + date }]);
-    else if (appUrl) rows.push([{ text: t.name + ' →', url: appUrl }]);
+    var label = (t.icon ? t.icon + ' ' : '') + t.name;
+    if (plain) rows.push([{ text: '✓ ' + label, callback_data: 'c|' + t.id + '|' + date }]);
+    else if (appUrl) rows.push([{ text: label + ' →', url: appUrl }]);
   }
   return rows;
 }
@@ -354,6 +369,6 @@ if (typeof module !== 'undefined' && module.exports) {
     dayStats: dayStats, bonusStats: bonusStats, taskStreak: taskStreak, overallStreak: overallStreak,
     dimensionRates: dimensionRates, dailyRates: dailyRates, periodExtras: periodExtras, decideReminder: decideReminder,
     buildReminderText: buildReminderText, buildReminderKeyboard: buildReminderKeyboard, decidePeriodic: decidePeriodic,
-    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, SLOTS: SLOTS
+    buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, iconOf: iconOf, SLOTS: SLOTS
   };
 }

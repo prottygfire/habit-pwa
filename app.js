@@ -11,6 +11,7 @@
   };
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
+  var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
   var TABS = ['today', 'tasks', 'plan', 'settings'];
 
   var LS = {
@@ -136,6 +137,8 @@
   }
 
   function pct(r) { return r === null || r === undefined ? '—' : Math.round(r * 100) + '%'; }
+  function dimCls(d) { return 'd' + DIMS.indexOf(d); }
+  function nameLine(t) { return h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, iconOf(t)), t.name); }
   function hasOptions(t) { return !!(t.options && t.options.length); }
 
   // ---- check-in actions (local first, then queued) ----
@@ -261,7 +264,8 @@
     var done = isDone(t, date, c.idx), tier = tierOn(t, date, c.idx), note = noteOn(t, date, c.idx);
     var streak = taskStreak(t, date, c.idx, c.leave);
     var tiered = !!(t.tierUp || t.tierDown);
-    var sub = [h('span', { class: 'chip' }, t.dim)];
+    var sub = [h('span', { class: 'chip dc' }, t.dim)];
+    if (isBonus(t)) sub.push(h('span', { class: 'chip' }, '加分'));
     if (done && tier && tier !== '標準') sub.push(h('span', { class: 'chip on' }, tier));
     if (streak > 0) sub.push(h('span', { class: 'muted' }, '🔥' + streak + '天'));
     var tap = function () {
@@ -269,10 +273,10 @@
       else if (done) uncheckTask(t, date);
       else checkTask(t, date, '標準', '');
     };
-    return h('div', { class: 'card item row' + (done ? ' done' : '') },
+    return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') },
       h('button', { class: 'check', 'aria-pressed': String(done), 'aria-label': (done ? '取消完成 ' : '完成 ') + t.name, onclick: tap }, '✓'),
       h('div', { class: 'grow' },
-        h('div', { class: 'name' }, t.name),
+        nameLine(t),
         h('div', null, sub),
         done && note ? h('div', { class: 'muted' }, note) : null,
         !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : null),
@@ -291,20 +295,22 @@
     } else {
       action = h('button', { class: 'btn small' + (doneToday ? ' primary' : ''), onclick: function () { if (doneToday) uncheckTask(t, date); else checkTask(t, date, '標準', ''); } }, doneToday ? '今天已記 ✓' : '＋今天');
     }
-    return h('div', { class: 'card' },
+    return h('div', { class: 'card ' + dimCls(t.dim) },
       h('div', { class: 'row' },
         h('div', { class: 'grow' },
-          h('div', { class: 'name' }, t.name),
-          h('div', null, h('span', { class: 'chip' }, t.dim), h('span', { class: 'muted' }, '本' + UNIT[t.freq] + ' ' + p.done + '/' + p.target + unit + (streak > 0 ? ' 🔥' + streak + UNIT[t.freq] : '')))),
+          nameLine(t),
+          h('div', null, h('span', { class: 'chip dc' }, t.dim), h('span', { class: 'muted' }, '本' + UNIT[t.freq] + ' ' + p.done + '/' + p.target + unit + (streak > 0 ? ' 🔥' + streak + UNIT[t.freq] : '')))),
         action),
       h('div', { class: 'bar', style: 'margin-top:8px' }, h('i', { style: 'width:' + Math.round(Math.min(1, p.done / p.target) * 100) + '%' })));
   }
 
-  function groupBySlot(items, c, date, label, nodes) {
+  // One block per time slot; inside a block 必做 comes first, then 加分.
+  function groupBySlot(items, c, date, nodes) {
     SLOT_ORDER.forEach(function (slot) {
       var list = items.filter(function (t) { return (t.slot || '不限') === slot; });
+      list.sort(function (x, y) { return (isBonus(x) ? 1 : 0) - (isBonus(y) ? 1 : 0); });
       if (!list.length) return;
-      nodes.push(h('h2', null, label + '・' + (slot === '不限' ? '全天' : slot)));
+      nodes.push(h('h2', null, slot === '不限' ? '全天' : slot));
       list.forEach(function (t) { nodes.push(taskItem(t, c, date)); });
     });
   }
@@ -312,16 +318,16 @@
   function renderToday() {
     var c = ctx(), date = state.date, isToday = date === today(), onLeave = !!c.leave[date];
     var daily = c.tasks.filter(function (t) { return !isAccumFreq(t.freq) && isScheduled(t, date); });
-    var must = daily.filter(function (t) { return !isBonus(t); });
-    var extra = daily.filter(isBonus);
     var accum = c.tasks.filter(function (t) { return isAccumFreq(t.freq) && isScheduled(t, date); });
     var st = dayStats(c.tasks, date, c.idx, c.leave), bs = bonusStats(c.tasks, date, c.idx);
     var overall = overallStreak(c.tasks, date, c.idx, c.leave);
     var nodes = [
-      h('div', { class: 'row' },
-        h('button', { class: 'btn small', 'aria-label': '前一天', onclick: function () { state.date = addDays(date, -1); render(); } }, '‹'),
-        h('h1', { class: 'grow' }, dateTitle(date) + (isToday ? ' · 今天' : '')),
-        h('button', { class: 'btn small', 'aria-label': '後一天', disabled: date >= today(), onclick: function () { state.date = addDays(date, 1); render(); } }, '›')),
+      h('div', { class: 'sticky' },
+        h('div', { class: 'row' },
+          h('button', { class: 'btn small', 'aria-label': '前一天', onclick: function () { state.date = addDays(date, -1); render(); } }, '‹'),
+          h('h1', { class: 'grow' }, dateTitle(date) + (isToday ? ' · 今天' : '')),
+          h('button', { class: 'btn small', 'aria-label': '後一天', disabled: date >= today(), onclick: function () { state.date = addDays(date, 1); render(); } }, '›')),
+        h('div', { class: 'bar thin', 'aria-hidden': 'true' }, h('i', { style: 'width:' + (st.rate === null ? 0 : Math.round(st.rate * 100)) + '%' }))),
       h('div', { class: 'card' },
         h('div', { class: 'stat' }, h('span', null, '必做完成率 ', h('b', null, pct(st.rate))), h('span', null, '🔥 連續 ', h('b', null, overall), ' 天')),
         h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': st.rate === null ? 0 : Math.round(st.rate * 100), 'aria-valuemin': 0, 'aria-valuemax': 100 },
@@ -330,8 +336,7 @@
       h('button', { class: 'btn small' + (onLeave ? ' primary' : ''), onclick: function () { toggleLeave(date, !onLeave); } }, onLeave ? '已請假（點一下取消）' : '這天請假（不影響連續天數）')
     ];
     if (onLeave) nodes.push(h('p', { class: 'muted' }, '請假日不提醒，也不計入完成率。'));
-    groupBySlot(must, c, date, '必做', nodes);
-    groupBySlot(extra, c, date, '加分', nodes);
+    groupBySlot(daily, c, date, nodes);
     if (accum.length) {
       nodes.push(h('h2', { id: 'accum' }, '累計目標'));
       accum.forEach(function (t) { nodes.push(accumItem(t, c, date)); });
@@ -343,7 +348,7 @@
   // ---- tasks ----
 
   function blankTask() {
-    return { id: '', name: '', dim: '健康', freq: 'daily', param: '', slot: '不限', remind: true, active: true, link: '', cls: '必做', tierUp: '', tierDown: '', options: [] };
+    return { id: '', name: '', icon: '', dim: '健康', freq: 'daily', param: '', slot: '不限', remind: true, active: true, link: '', cls: '必做', tierUp: '', tierDown: '', options: [] };
   }
 
   function saveTaskForm(form, original) {
@@ -352,7 +357,7 @@
     if (freq === 'weekdays') param = Array.prototype.filter.call(form.querySelectorAll('input[name=wd]'), function (x) { return x.checked; }).map(function (x) { return x.value; }).join(',');
     if (isAccumFreq(freq)) param = f.n.value;
     var task = {
-      id: original.id, name: f.name.value, dim: f.dim.value, cls: f.cls.value, freq: freq, param: param, slot: f.slot.value,
+      id: original.id, name: f.name.value, icon: f.icon.value.trim(), dim: f.dim.value, cls: f.cls.value, freq: freq, param: param, slot: f.slot.value,
       remind: f.remind.checked, active: f.active.checked, link: f.link.value,
       tierUp: isAccumFreq(freq) ? '' : f.tierUp.value, tierDown: isAccumFreq(freq) ? '' : f.tierDown.value,
       options: isAccumFreq(freq) ? '' : f.options.value
@@ -367,6 +372,12 @@
     var form = h('form', { class: 'card', onsubmit: function (ev) { ev.preventDefault(); saveTaskForm(form, t); } },
       h('label', { class: 'f', for: 'f-name' }, '名稱'),
       h('input', { type: 'text', id: 'f-name', name: 'name', value: t.name, required: true, maxlength: '80' }),
+      h('label', { class: 'f', for: 'f-icon' }, '圖示（一個表情符號，留空會依名稱自動挑）'),
+      h('div', { class: 'row' },
+        h('input', { type: 'text', id: 'f-icon', name: 'icon', value: t.icon || '', maxlength: '8', style: 'width:90px;font-size:1.4rem;text-align:center' }),
+        h('div', { class: 'icons grow' }, ICON_CHOICES.map(function (ic) {
+          return h('button', { class: 'ibtn', type: 'button', 'aria-label': '選用圖示 ' + ic, onclick: function () { form.elements.icon.value = ic; } }, ic);
+        }))),
       h('label', { class: 'f', for: 'f-cls' }, '類別（必做計入完成率與連續；加分只記錄）'),
       h('select', { id: 'f-cls', name: 'cls' }, ['必做', '加分'].map(function (k) { return h('option', { value: k, selected: k === t.cls }, k); })),
       h('label', { class: 'f', for: 'f-dim' }, '維度'),
@@ -417,9 +428,9 @@
     var nodes = [h('div', { class: 'row' }, h('h1', { class: 'grow' }, '任務'), h('button', { class: 'btn primary', onclick: function () { state.editing = blankTask(); render(); } }, '＋ 新增'))];
     state.data.tasks.forEach(function (t) {
       var extras = (hasOptions(t) ? '・' + t.options.length + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
-      nodes.push(h('div', { class: 'card item row' + (t.active ? '' : ' inactive') },
-        h('div', { class: 'grow' }, h('div', { class: 'name' }, t.name),
-          h('div', null, h('span', { class: 'chip' }, t.dim), h('span', { class: 'chip' + (isBonus(t) ? '' : ' on') }, t.cls || '必做'),
+      nodes.push(h('div', { class: 'card item row ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
+        h('div', { class: 'grow' }, nameLine(t),
+          h('div', null, h('span', { class: 'chip dc' }, t.dim), h('span', { class: 'chip' + (isBonus(t) ? '' : ' on') }, t.cls || '必做'),
             h('span', { class: 'muted' }, freqText(t) + (t.slot !== '不限' ? '・' + t.slot : '') + (t.remind ? '・提醒' : '') + extras + (t.active ? '' : '・已暫停')))),
         h('button', { class: 'btn small', onclick: function () { state.editing = JSON.parse(JSON.stringify(t)); render(); } }, '編輯'),
         h('button', { class: 'btn small danger', onclick: function () {
@@ -433,8 +444,8 @@
 
   // ---- month / quarter ----
 
-  function bar(label, right, rate) {
-    return h('div', { style: 'margin:8px 0' },
+  function bar(label, right, rate, dim) {
+    return h('div', { class: dim ? dimCls(dim) : '', style: 'margin:8px 0' },
       h('div', { class: 'row' }, h('span', { class: 'grow' }, label), h('span', { class: 'muted' }, right)),
       h('div', { class: 'bar' }, h('i', { style: 'width:' + Math.round(Math.min(1, rate || 0) * 100) + '%' })));
   }
@@ -443,13 +454,13 @@
     var mine = state.data.goals.filter(function (g) { return g.period === key; });
     var nodes = [h('h2', null, '一次性事項（' + key + '）')];
     mine.forEach(function (g) {
-      nodes.push(h('div', { class: 'card item row' + (g.done ? ' done' : '') },
+      nodes.push(h('div', { class: 'card item row ' + dimCls(g.dim) + (g.done ? ' done' : '') },
         h('button', { class: 'check', 'aria-pressed': String(g.done), 'aria-label': g.name, onclick: function () {
           g.done = !g.done;
           api('toggleGoal', { id: g.id, done: g.done }).then(refresh).catch(function (e) { g.done = !g.done; toast(e.network ? '需要網路' : e.message); render(); });
           render();
         } }, '✓'),
-        h('div', { class: 'grow' }, h('div', { class: 'name' }, g.name), h('span', { class: 'chip' }, g.dim)),
+        h('div', { class: 'grow' }, h('div', { class: 'name' }, g.name), h('span', { class: 'chip dc' }, g.dim)),
         h('button', { class: 'btn small danger', onclick: function () {
           if (confirm('刪除「' + g.name + '」？')) api('deleteGoal', { id: g.id }).then(refresh).catch(function (e) { toast(e.network ? '需要網路' : e.message); });
         } }, '刪')));
@@ -503,7 +514,7 @@
     DIMS.forEach(function (d) {
       if (!rates[d]) return;
       any = true;
-      nodes.push(bar(d, pct(rates[d].rate) + '（' + rates[d].done + '/' + rates[d].due + '）', rates[d].rate));
+      nodes.push(bar(d, pct(rates[d].rate) + '（' + rates[d].done + '/' + rates[d].due + '）', rates[d].rate, d));
     });
     if (!any) nodes.push(h('p', { class: 'muted' }, '還沒有資料，從今天開始打卡。'));
     var accum = c.tasks.filter(function (t) {
@@ -515,7 +526,7 @@
       nodes.push(h('h2', null, '累計目標'));
       accum.forEach(function (t) {
         var p = progress(t, t0, c.idx);
-        nodes.push(bar(t.name + '（每' + UNIT[t.freq] + '）', p.done + '/' + p.target + (isMinFreq(t.freq) ? ' 分' : ' 次'), p.done / p.target));
+        nodes.push(bar(iconOf(t) + ' ' + t.name + '（每' + UNIT[t.freq] + '）', p.done + '/' + p.target + (isMinFreq(t.freq) ? ' 分' : ' 次'), p.done / p.target, t.dim));
       });
     }
     var x = periodExtras(c.tasks, c.logs, range.start, range.end);

@@ -909,14 +909,22 @@ function computeGame(data, today) {
 // ---- limited-time challenges ----
 
 // Draws one move from the 運動動作庫. rand in [0, 1). state: today's 精神好 / 普通 / 疲勞.
-// library rows: {move, kind, unit, easy, standard, hard, minutes, active}
-function drawChallenge(library, state, rand) {
-  var pool = library.filter(function (r) { return r.active !== false && Number(r.minutes) > 0 && (Number(r.standard) > 0 || Number(r.easy) > 0 || Number(r.hard) > 0); });
+// place: '在家' draws from every active move; '在外面' only from moves whose 地點 is 辦公室.
+// library rows: {move, kind, unit, easy, standard, hard, minutes, active, place, howto, links, images}
+function drawChallenge(library, state, rand, place) {
+  var outside = place === '在外面';
+  var pool = library.filter(function (r) {
+    return r.active !== false && Number(r.minutes) > 0 && (Number(r.standard) > 0 || Number(r.easy) > 0 || Number(r.hard) > 0) &&
+      (!outside || r.place === '辦公室');
+  });
   if (!pool.length) return null;
   var r = pool[Math.min(pool.length - 1, Math.floor(rand * pool.length))];
   var level = state === '疲勞' ? '簡單' : state === '精神好' ? '挑戰' : '標準';
   var amount = Number(level === '簡單' ? r.easy : level === '挑戰' ? r.hard : r.standard) || Number(r.standard) || Number(r.easy) || Number(r.hard);
-  return { move: r.move, kind: r.kind || '', unit: r.unit || '次', amount: amount, level: level, minutes: Number(r.minutes) };
+  return {
+    move: r.move, kind: r.kind || '', unit: r.unit || '次', amount: amount, level: level, minutes: Number(r.minutes),
+    place: outside ? '在外面' : '在家', howto: r.howto || '', links: r.links || [], images: r.images || []
+  };
 }
 
 // Draws used on a date: resolved rows plus a challenge still running on this phone.

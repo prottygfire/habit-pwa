@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-20 v8';
+  var VERSION = '2026-10-20 v9';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -43,7 +43,8 @@
     rev: 0,
     pop: null,
     preview: null,
-    challenge: LS.get('habit.challenge', null)
+    challenge: LS.get('habit.challenge', null),
+    place: LS.get('habit.place', '在家')
   };
 
   var qTab = new URLSearchParams(location.search).get('tab');
@@ -614,8 +615,33 @@
     }, 1000);
   }
 
+  function setPlace(p) {
+    state.place = p;
+    LS.set('habit.place', p);
+    state.preview = null;
+    render();
+  }
+
+  function linkLabel(u) {
+    return /instagram\.com/.test(u) ? 'Instagram 影片／貼文' : /facebook\.com/.test(u) ? 'Facebook 影片' : /youtu\.?be/.test(u) ? 'YouTube 影片' : '參考連結';
+  }
+
+  // How to do it, plus the links and pictures from the 運動動作庫 row, so a drawn move can be followed along.
+  function challengeHelp(c) {
+    var nodes = [];
+    if (c.howto) nodes.push(h('div', { class: 'howto' }, c.howto));
+    (c.images || []).forEach(function (u) { nodes.push(h('img', { class: 'howimg', src: u, alt: c.move + ' 示範圖', loading: 'lazy' })); });
+    if ((c.links || []).length) {
+      nodes.push(h('div', { class: 'row', style: 'flex-wrap:wrap;margin-top:8px' }, c.links.map(function (u, i) {
+        return h('a', { class: 'btn small', href: u, target: '_blank', rel: 'noopener' }, '▶ ' + linkLabel(u) + (c.links.length > 1 ? ' ' + (i + 1) : ''));
+      })));
+    }
+    return nodes;
+  }
+
   function drawNow() {
-    var c = drawChallenge(dget('library'), trainStateOn(today()), Math.random());
+    var c = drawChallenge(dget('library'), trainStateOn(today()), Math.random(), state.place);
+    if (!c && state.place === '在外面') { toast('「在外面」目前沒有可抽的動作：到試算表「運動動作庫」，把「地點」填成「辦公室」的動作才抽得到'); return; }
     if (!c) { toast('動作庫是空的，請到試算表「運動動作庫」新增動作'); return; }
     state.preview = c;
     render();
@@ -636,7 +662,7 @@
     var c = state.challenge;
     if (!c) return;
     if (result === '成功' && Date.now() > c.endAt + 1500) result = '失敗';
-    var row = { date: c.date, move: c.move, amount: c.amount, level: c.level, minutes: c.minutes, result: result, secs: Math.round((Date.now() - c.startedAt) / 1000) };
+    var row = { date: c.date, move: c.move, amount: c.amount, level: c.level, minutes: c.minutes, result: result, secs: Math.round((Date.now() - c.startedAt) / 1000), place: c.place || state.place };
     state.challenge = null;
     LS.set('habit.challenge', null);
     state.data.challenges = dget('challenges').concat([row]);
@@ -653,19 +679,25 @@
     if (c && c.date === today()) {
       var over = chRemaining() <= 0;
       startTicker();
-      box.appendChild(h('div', { class: 'muted' }, challengeText(c) + '（' + c.level + '量）'));
+      box.appendChild(h('div', { class: 'muted' }, (c.place ? c.place + '・' : '') + challengeText(c) + '（' + c.level + '量）'));
+      challengeHelp(c).forEach(function (n) { box.appendChild(n); });
       box.appendChild(h('div', { id: 'ch-timer', class: 'timer' + (over ? ' over' : '') }, over ? '時間到' : fmtTime(chRemaining())));
       box.appendChild(h('div', { class: 'row', style: 'margin-top:8px' },
         over ? null : h('button', { class: 'btn primary grow', onclick: function () { resolveChallenge('成功'); } }, '完成了'),
         h('button', { class: 'btn' + (over ? ' primary grow' : ''), onclick: function () { resolveChallenge(over ? '失敗' : '放棄'); } }, over ? '結束' : '放棄')));
     } else if (state.preview) {
       box.appendChild(h('div', { class: 'timer small' }, challengeText(state.preview)));
-      box.appendChild(h('div', { class: 'muted' }, state.preview.level + '量（依今天的狀態）・按「開始」才計時，也才用掉一次機會'));
+      box.appendChild(h('div', { class: 'muted' }, state.preview.place + '・' + state.preview.level + '量（依今天的狀態）・按「開始」才計時，也才用掉一次機會'));
+      challengeHelp(state.preview).forEach(function (n) { box.appendChild(n); });
       box.appendChild(h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { class: 'btn primary grow', onclick: startChallenge }, '開始'),
         h('button', { class: 'btn', onclick: function () { state.preview = null; render(); } }, '先不要')));
     } else {
       box.appendChild(h('div', { class: 'muted' }, '隨機從你的動作庫抽一個，時間內完成有加分，沒完成不扣分。今天還有 ' + left + ' 次。'));
+      box.appendChild(h('div', { class: 'seg', role: 'group', 'aria-label': '現在在哪裡' }, ['在家', '在外面'].map(function (p) {
+        return h('button', { class: 'btn' + (state.place === p ? ' on' : ''), 'aria-pressed': String(state.place === p), onclick: function () { setPlace(p); } }, p === '在家' ? '🏠 在家' : '🚶 在外面');
+      })));
+      if (state.place === '在外面') box.appendChild(h('div', { class: 'muted' }, '在外面只會抽「辦公室可以做」的動作（坐著或站著就能做、不用器材）。'));
       box.appendChild(h('button', { class: 'btn primary', style: 'margin-top:8px', disabled: left <= 0, onclick: drawNow }, left > 0 ? '抽一個限時挑戰' : '今天的次數用完了'));
     }
     var todayRows = dget('challenges').filter(function (r) { return r.date === date; });

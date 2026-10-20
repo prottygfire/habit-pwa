@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js by build.py. Edit the source, not this copy.
+// GENERATED from shared/logic.js and shared/game.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -515,4 +515,404 @@ if (typeof module !== 'undefined' && module.exports) {
     trainingMenu: trainingMenu, trainVariant: trainVariant, trainingSummary: trainingSummary,
     buildTrainingLine: buildTrainingLine, TRAIN_STATES: TRAIN_STATES
   };
+}
+
+// Gamification: skills, levels, star coins, achievements, clean days, limited-time challenges.
+// Everything is derived from the same logs the rest of the app uses (nothing extra is stored), so old check-ins count too.
+// Concatenated after logic.js by build.py; it uses logic.js functions (dayStats, isScheduled, indexLogs, ...) directly.
+//
+// data = {tasks, logs, leave, train, slips, slipItems, redemptions, challenges, settings}
+//   logs:        {date, taskId, tier, minutes, note, ts}
+//   train:       {date, item, minutes, ...}
+//   slips:       {date, item}            item = 扣分項 id
+//   slipItems:   {id, name, icon, active}
+//   redemptions: {date, rewardId, name, cost}
+//   challenges:  {date, move, level, result ('成功'|'失敗'|'放棄')}
+
+var SKILLS = ['體能', '健康', '財商', '學習', '關係'];
+
+var SKILL_TITLES = {
+  '體能': ['動起來的人', '晨動者', '規律運動者', '穩定跑者', '體能新星', '肌耐力玩家', '耐力戰士', '鐵人預備軍', '精實身形', '體能大師',
+    '持久力玩家', '間歇掌控者', '力量鍛造師', '全能運動家', '體能宗師', '不倦的行者', '鋼鐵意志', '耐力傳奇', '巔峰身形', '體能傳說'],
+  '健康': ['養生新手', '早睡嘗試者', '補水達人', '規律生活者', '血糖守護者', '睡眠管理師', '身心平衡者', '健康職人', '養生達人', '健康大師',
+    '作息建築師', '飲食設計師', '恢復力專家', '身心守護者', '健康宗師', '長壽習慣家', '能量管理者', '自癒力達人', '養生傳奇', '健康傳說'],
+  '財商': ['記帳新手', '帳目小幫手', '收支觀察者', '預算管理者', '資產園丁', '現金流掌舵手', '理財策略家', '複利信徒', '財務自由路上人', '財商大師',
+    '現金流守門人', '資產配置家', '風險管理者', '長期主義者', '財商宗師', '複利建築師', '被動收入築夢者', '財務自由先行者', '財富智者', '財商傳說'],
+  '學習': ['好奇寶寶', '閱讀者', '筆記常客', '知識探險家', '持續進修者', '深度思考者', '學習職人', '跨域整合者', '知識建築師', '學習大師',
+    '持續閱讀者', '筆記系統家', '概念連結者', '終身學習者', '學習宗師', '知識整合家', '思想實驗家', '洞察獵人', '智慧傳承者', '學習傳說'],
+  '關係': ['打招呼的人', '傾聽者', '暖心聯絡人', '關係經營者', '可靠夥伴', '自我覺察者', '溫暖支柱', '情感智者', '人際橋梁', '關係大師',
+    '默契培養者', '陪伴專家', '衝突調解者', '信任建構者', '關係宗師', '溫度傳遞者', '家人的避風港', '友誼園丁', '深度連結者', '關係傳說']
+};
+
+// Extra star coins when a skill reaches one of these levels (on top of the +5 every level gives).
+var TIER_PROMO = { 4: 10, 7: 20, 10: 40, 15: 80, 20: 150 };
+var STREAK_COINS = { 7: 10, 14: 20, 30: 40, 60: 80, 100: 150 };
+var TOTAL_TITLES = ['新手', '起步者', '穩定者', '前進者', '實踐者', '行動家', '磨練者', '達人', '名家', '宗師', '圓滿'];
+var GAME_LOOKBACK_DAYS = 800;
+var CHALLENGE_DRAWS_PER_DAY = 3;
+var CHALLENGE_REWARDED_PER_DAY = 2;
+
+// Cumulative skill points needed to be at level L: each level costs 10 + 3 * (L - 1) more than the one before.
+function levelCum(L) { return L <= 1 ? 0 : 10 * (L - 1) + 3 * (L - 1) * (L - 2) / 2; }
+
+function levelOf(sp) {
+  var L = 1;
+  while (levelCum(L + 1) <= sp) L++;
+  return L;
+}
+
+function skillTitle(skill, level) {
+  var t = SKILL_TITLES[skill];
+  if (!t) return '';
+  return level <= 20 ? t[level - 1] : t[19] + ' Lv.' + level;
+}
+
+function tierName(level) {
+  if (level >= 20) return '傳說';
+  if (level >= 15) return '宗師';
+  if (level >= 10) return '大師';
+  if (level >= 7) return '高階';
+  if (level >= 4) return '進階';
+  return '初階';
+}
+
+function levelFrame(level) { return level >= 20 ? 'rainbow' : level >= 15 ? 'gold' : level >= 10 ? 'silver' : ''; }
+
+function totalTitle(total) { return TOTAL_TITLES[Math.min(10, Math.floor(total / 10))]; }
+
+// The skill a task trains: its own 技能 field, else a guess from its dimension and name. '' = none (娛樂, 工作).
+function skillOf(task) {
+  if (task.skill === '無') return '';
+  if (SKILLS.indexOf(task.skill) >= 0) return task.skill;
+  var d = task.dim, n = task.name || '';
+  if (d === '財商') return '財商';
+  if (d === '學習') return '學習';
+  if (d === '情緒') return '關係';
+  if (d === '健康') return /睡|水|保養|血糖|拉筋|就寢|喝|吃|菜|醋/.test(n) ? '健康' : '體能';
+  return '';
+}
+
+function groupBy_(rows, key) {
+  var out = {};
+  for (var i = 0; i < rows.length; i++) (out[rows[i][key]] || (out[rows[i][key]] = [])).push(rows[i]);
+  return out;
+}
+
+function daysInMonth_(ym) {
+  return new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate();
+}
+
+// Achievement catalogue. test(S) looks at the running state S after each day; the first day it is true is the unlock date.
+var ACHIEVEMENTS = [
+  { id: 's3', cat: '連續', name: '起步', desc: '連續 3 天達標', coins: 0, test: function (S) { return S.streak >= 3; } },
+  { id: 's7', cat: '連續', name: '一週不間斷', desc: '連續 7 天達標', coins: 0, test: function (S) { return S.streak >= 7; } },
+  { id: 's14', cat: '連續', name: '兩週堅持', desc: '連續 14 天達標', coins: 0, test: function (S) { return S.streak >= 14; } },
+  { id: 's21', cat: '連續', name: '習慣養成', desc: '連續 21 天達標', coins: 0, test: function (S) { return S.streak >= 21; } },
+  { id: 's30', cat: '連續', name: '滿月', desc: '連續 30 天達標', coins: 0, test: function (S) { return S.streak >= 30; } },
+  { id: 's60', cat: '連續', name: '兩個月', desc: '連續 60 天達標', coins: 0, test: function (S) { return S.streak >= 60; } },
+  { id: 's100', cat: '連續', name: '百日', desc: '連續 100 天達標', coins: 0, test: function (S) { return S.streak >= 100; } },
+  { id: 'p1', cat: '完美日', name: '第一次完美', desc: '第一次必做 100% 完成', coins: 3, test: function (S) { return S.perfectCount >= 1; } },
+  { id: 'p3', cat: '完美日', name: '三連完美', desc: '連續 3 個完美日', coins: 5, test: function (S) { return S.perfectStreak >= 3; } },
+  { id: 'p10', cat: '完美日', name: '十全十美', desc: '累計 10 個完美日', coins: 5, test: function (S) { return S.perfectCount >= 10; } },
+  { id: 'p30', cat: '完美日', name: '完美收藏家', desc: '累計 30 個完美日', coins: 10, test: function (S) { return S.perfectCount >= 30; } },
+  { id: 'p100', cat: '完美日', name: '百分百', desc: '累計 100 個完美日', coins: 20, test: function (S) { return S.perfectCount >= 100; } },
+  { id: 'w1', cat: '每週', name: '一週五天', desc: '一週內達標 5 天', coins: 3, test: function (S) { return S.weekQual >= 5 || S.weekRun >= 1; } },
+  { id: 'w4', cat: '每週', name: '四週穩定', desc: '連續 4 週，每週都達標 5 天', coins: 10, test: function (S) { return S.weekRunNow >= 4; } },
+  { id: 'k3', cat: '技能', name: '新手畢業', desc: '任一技能到 Lv3', coins: 5, test: function (S) { return S.maxLevel >= 3; } },
+  { id: 'k5', cat: '技能', name: '漸入佳境', desc: '任一技能到 Lv5', coins: 5, test: function (S) { return S.maxLevel >= 5; } },
+  { id: 'k10', cat: '技能', name: '大師誕生', desc: '任一技能到 Lv10', coins: 15, test: function (S) { return S.maxLevel >= 10; } },
+  { id: 'k15', cat: '技能', name: '宗師之路', desc: '任一技能到 Lv15', coins: 20, test: function (S) { return S.maxLevel >= 15; } },
+  { id: 'k20', cat: '技能', name: '傳說誕生', desc: '任一技能到 Lv20', coins: 20, test: function (S) { return S.maxLevel >= 20; } },
+  { id: 'a3', cat: '技能', name: '均衡發展', desc: '五個技能都到 Lv3', coins: 10, test: function (S) { return S.minLevel >= 3; } },
+  { id: 'a5', cat: '技能', name: '全面進化', desc: '五個技能都到 Lv5', coins: 15, test: function (S) { return S.minLevel >= 5; } },
+  { id: 'a10', cat: '技能', name: '五星全能', desc: '五個技能都到 Lv10', coins: 20, test: function (S) { return S.minLevel >= 10; } },
+  { id: 'a20', cat: '技能', name: '圓滿', desc: '五個技能都到 Lv20', coins: 20, test: function (S) { return S.minLevel >= 20; } },
+  { id: 't1', cat: '體能', name: '第一次訓練', desc: '在訓練頁完成第一次訓練', coins: 3, test: function (S) { return S.trainTotal >= 1; } },
+  { id: 'tw4', cat: '體能', name: '一週四練', desc: '一週內完成 4 次訓練', coins: 5, test: function (S) { return S.weekTrain >= 4; } },
+  { id: 'r600', cat: '體能', name: '跑滿 10 小時', desc: '累計跑步 600 分鐘', coins: 5, test: function (S) { return S.runTotal >= 600; } },
+  { id: 'r1200', cat: '體能', name: '跑滿 20 小時', desc: '累計跑步 1200 分鐘', coins: 10, test: function (S) { return S.runTotal >= 1200; } },
+  { id: 'r3000', cat: '體能', name: '跑滿 50 小時', desc: '累計跑步 3000 分鐘', coins: 20, test: function (S) { return S.runTotal >= 3000; } },
+  { id: 'rw4', cat: '體能', name: '跑步四週達標', desc: '連續 4 週達到每週跑步目標', coins: 10, test: function (S) { return S.runWeekNow >= 4; } },
+  { id: 'rw8', cat: '體能', name: '跑步八週達標', desc: '連續 8 週達到每週跑步目標', coins: 15, test: function (S) { return S.runWeekNow >= 8; } },
+  { id: 'k10k', cat: '體能', name: '10 公里完成', desc: '完成三星練跑教練的 10 公里等級測試', coins: 15, test: function (S) { return S.test10k; } },
+  { id: 'p12', cat: '體能', name: '走完 12 週計畫', desc: '訓練計畫走到第 12 週', coins: 20, test: function (S) { return S.plan12; } },
+  { id: 'c1', cat: '限時挑戰', name: '第一次挑戰成功', desc: '限時挑戰第一次成功', coins: 3, test: function (S) { return S.chTotal >= 1; } },
+  { id: 'c10', cat: '限時挑戰', name: '挑戰十次', desc: '限時挑戰累計成功 10 次', coins: 8, test: function (S) { return S.chTotal >= 10; } },
+  { id: 'c30', cat: '限時挑戰', name: '挑戰三十次', desc: '限時挑戰累計成功 30 次', coins: 15, test: function (S) { return S.chTotal >= 30; } },
+  { id: 'c2', cat: '限時挑戰', name: '一天雙殺', desc: '同一天挑戰成功 2 次', coins: 5, test: function (S) { return S.chDay >= 2; } },
+  { id: 'cl7', cat: '清爽', name: '清爽一週', desc: '任一扣分項連續乾淨 7 天', coins: 5, test: function (S) { return S.cleanMax >= 7; } },
+  { id: 'cl14', cat: '清爽', name: '清爽兩週', desc: '任一扣分項連續乾淨 14 天', coins: 8, test: function (S) { return S.cleanMax >= 14; } },
+  { id: 'cl30', cat: '清爽', name: '清爽一個月', desc: '任一扣分項連續乾淨 30 天', coins: 15, test: function (S) { return S.cleanMax >= 30; } },
+  { id: 'cl2', cat: '清爽', name: '雙清爽兩週', desc: '炸物和飲酒同時連續乾淨 14 天', coins: 10, test: function (S) { return S.cleanCombo >= 14; } },
+  { id: 'h30', cat: '習慣養成', name: '三十次達人', desc: '同一個任務累計完成 30 次', coins: 5, test: function (S) { return S.doneMax >= 30; } },
+  { id: 'h100', cat: '習慣養成', name: '百次達人', desc: '同一個任務累計完成 100 次', coins: 15, test: function (S) { return S.doneMax >= 100; } },
+  { id: 'low10', cat: '習慣養成', name: '再累也有做', desc: '用「最低版」守住習慣累計 10 次', coins: 8, test: function (S) { return S.low >= 10; } },
+  { id: 'glu30', cat: '習慣養成', name: '血糖守護', desc: '血糖措施累計完成 30 次', coins: 8, test: function (S) { return S.glucose >= 30; } },
+  { id: 'r1', cat: '犒賞', name: '犒賞自己', desc: '第一次兌換獎勵', coins: 3, test: function (S) { return S.redCount >= 1; } },
+  { id: 'hid1', cat: '隱藏', hidden: true, name: '早鳥', desc: '早上 6 點前完成晨間鍛鍊', coins: 5, test: function (S) { return S.early; } },
+  { id: 'hid2', cat: '隱藏', hidden: true, name: '滿分一天', desc: '一天內必做和加分全部完成', coins: 8, test: function (S) { return S.fullDay; } },
+  { id: 'hid3', cat: '隱藏', hidden: true, name: '七天全勤', desc: '連續 7 天達標，而且沒用請假日', coins: 8, test: function (S) { return S.noLeave7; } }
+];
+
+function emptyGame_(today) {
+  var skills = {};
+  SKILLS.forEach(function (s) {
+    skills[s] = { sp: 0, level: 1, title: skillTitle(s, 1), tier: tierName(1), frame: '', levelStart: 0, nextAt: levelCum(2), toNext: levelCum(2), gain: 0 };
+  });
+  return {
+    today: today, skills: skills, totalLevel: 5, totalTitle: totalTitle(5), coins: { earned: 0, spent: 0, balance: 0, gain: 0 }, events: [],
+    achievements: ACHIEVEMENTS.map(function (a) { return { id: a.id, cat: a.cat, name: a.name, desc: a.desc, coins: a.coins, hidden: !!a.hidden, unlocked: false, date: '' }; }),
+    streak: { current: 0, best: 0 }, perfectCount: 0, qualifiedTotal: 0,
+    month: { key: monthKey(today), qualified: 0, leave: 0, days: daysInMonth_(monthKey(today)) }, clean: []
+  };
+}
+
+function computeGame(data, today) {
+  var tasks = data.tasks || [], logs = data.logs || [], train = data.train || [], leaveArr = data.leave || [];
+  var slips = data.slips || [], items = data.slipItems || [], reds = data.redemptions || [], chs = data.challenges || [];
+  var settings = data.settings || {};
+  var idx = indexLogs(logs), leave = indexLeave(leaveArr);
+  var byId = {};
+  tasks.forEach(function (t) { byId[t.id] = t; });
+  var logsBy = groupBy_(logs, 'date'), trainBy = groupBy_(train, 'date'), slipsBy = groupBy_(slips, 'date');
+  var chBy = groupBy_(chs, 'date'), redBy = groupBy_(reds, 'date');
+
+  var first = '';
+  function lower_(d) { if (d && (!first || d < first)) first = d; }
+  logs.forEach(function (l) { lower_(l.date); });
+  train.forEach(function (r) { lower_(r.date); });
+  tasks.forEach(function (t) { lower_(t.since); });
+  if (!first) return emptyGame_(today);
+  var floor = addDays(today, -GAME_LOOKBACK_DAYS);
+  var start = first < floor ? floor : first;
+
+  var runIds = {}, runTarget = 0;
+  tasks.forEach(function (t) {
+    if (t.freq === 'weekly_min' && /跑/.test(t.name || '')) { runIds[t.id] = true; if (!runTarget) runTarget = targetOf(t); }
+  });
+  var trainStart = settings.trainStart || '2026-10-19';
+  var slipStart = settings.slipStart || '';
+  var activeItems = items.filter(function (i) { return i.active !== false; });
+  var itemByName = {};
+  activeItems.forEach(function (i) { itemByName[i.name] = i.id; });
+
+  var sp = {}, level = {}, cleanStreak = {}, cleanBest = {};
+  SKILLS.forEach(function (s) { sp[s] = 0; level[s] = 1; });
+  activeItems.forEach(function (i) { cleanStreak[i.id] = 0; cleanBest[i.id] = 0; });
+
+  var events = [], earned = 0, coinsByDate = {}, spGainToday = {};
+  function addCoins(d, n, type, text) {
+    if (!n) return;
+    earned += n;
+    coinsByDate[d] = (coinsByDate[d] || 0) + n;
+    if (type) events.push({ date: d, type: type, coins: n, text: text });
+  }
+
+  var S = {
+    streak: 0, perfectCount: 0, perfectStreak: 0, weekQual: 0, weekRun: 0, weekRunNow: 0, maxLevel: 1, minLevel: 1,
+    trainTotal: 0, weekTrain: 0, runTotal: 0, runWeekNow: 0, test10k: false, plan12: false, chTotal: 0, chDay: 0,
+    cleanMax: 0, cleanCombo: 0, doneMax: 0, low: 0, glucose: 0, redCount: 0, early: false, fullDay: false, noLeave7: false
+  };
+  var best = 0, qualifiedTotal = 0;
+  var doneCount = {}, unlocked = {};
+  var wk = '', weekQual = 0, weekRunMin = 0, runWeekRun = 0, weekTrain = 0;
+  var mk = '', monthQual = 0, monthLeave = 0, spent = 0;
+
+  function finalizeMonth(key, lastDate) {
+    if (!key) return;
+    var n = daysInMonth_(key);
+    if (monthQual + monthLeave === n && monthQual > 0) addCoins(lastDate, 50, 'month', key + ' 整月達標');
+  }
+
+  for (var d = start; d <= today; d = addDays(d, 1)) {
+    var isToday = d === today;
+    var onLeave = !!leave[d];
+
+    // ---- calendar rollovers ----
+    var w = addDays(d, -(weekdayOf(d) - 1));
+    if (w !== wk) {
+      if (wk) {
+        S.weekRun = weekQual >= 5 ? S.weekRun + 1 : 0;
+        if (runTarget) runWeekRun = weekRunMin >= runTarget ? runWeekRun + 1 : 0;
+      }
+      wk = w; weekQual = 0; weekRunMin = 0; weekTrain = 0;
+    }
+    var m = monthKey(d);
+    if (m !== mk) {
+      finalizeMonth(mk, addDays(d, -1));
+      mk = m; monthQual = 0; monthLeave = 0;
+    }
+    if (onLeave) monthLeave++;
+
+    // ---- day result ----
+    var st = dayStats(tasks, d, idx, leave);
+    var qualified = !onLeave && st.due > 0 && st.rate >= OVERALL_THRESHOLD;
+    var perfect = qualified && st.done === st.due;
+    if (qualified) {
+      qualifiedTotal++; weekQual++; monthQual++;
+      addCoins(d, 2, '', '');
+      if (perfect) addCoins(d, 2, '', '');
+      S.streak++;
+      if (S.streak > best) best = S.streak;
+      if (STREAK_COINS[S.streak]) addCoins(d, STREAK_COINS[S.streak], 'streak', '連續 ' + S.streak + ' 天達標');
+      if (weekQual === 5) addCoins(d, 5, 'week', '這週已達標 5 天');
+      if (monthQual === 10) addCoins(d, 10, 'month', monthKey(d) + ' 達標滿 10 天');
+      if (monthQual === 20) addCoins(d, 25, 'month', monthKey(d) + ' 達標滿 20 天');
+    } else if (!onLeave && st.due > 0 && !isToday) {
+      S.streak = 0;
+    }
+    if (perfect) { S.perfectCount++; S.perfectStreak++; }
+    else if (!onLeave && st.due > 0 && !isToday) S.perfectStreak = 0;
+
+    // ---- skill points ----
+    var sk = {};
+    SKILLS.forEach(function (s) { sk[s] = { due: 0, done: 0, extra: 0 }; });
+    tasks.forEach(function (t) {
+      if (!isFixedMust_(t) || !isScheduled(t, d)) return;
+      var s = skillOf(t);
+      if (!s) return;
+      sk[s].due++;
+      if (isDone(t, d, idx)) sk[s].done++;
+    });
+    var dayLogs = logsBy[d] || [], dayTrain = (trainBy[d] || []).filter(function (r) { return r.item !== '_state'; });
+    var dayCh = chBy[d] || [];
+    var chOk = dayCh.filter(function (c) { return c.result === '成功'; }).length;
+    dayLogs.forEach(function (l) {
+      var t = byId[l.taskId];
+      if (!t) return;
+      doneCount[t.id] = (doneCount[t.id] || 0) + 1;
+      if (l.tier === '最低') S.low++;
+      if (/血糖/.test(t.name || '')) S.glucose++;
+      if (runIds[t.id]) { var mins = Number(l.minutes) || 0; S.runTotal += mins; weekRunMin += mins; }
+      if (/晨間/.test(t.name || '') && l.ts && parseInt(String(l.ts).slice(11, 13), 10) < 6) S.early = true;
+      var s = skillOf(t);
+      if (s && (isAccumFreq(t.freq) || isBonus(t) || l.tier === '進階')) sk[s].extra++;
+    });
+    dayTrain.forEach(function (r) {
+      sk['體能'].extra++;
+      S.trainTotal++; weekTrain++;
+      if (r.item === 'test10k') S.test10k = true;
+      if (daysBetween(trainStart, r.date) >= 77) S.plan12 = true;
+    });
+    sk['體能'].extra += Math.min(chOk, CHALLENGE_REWARDED_PER_DAY);
+    S.chTotal += chOk;
+    S.chDay = chOk;
+    if (chOk) addCoins(d, 2 * Math.min(chOk, CHALLENGE_REWARDED_PER_DAY), '', '');
+    S.weekTrain = weekTrain;
+    var doneMax = 0;
+    for (var k in doneCount) if (doneCount[k] > doneMax) doneMax = doneCount[k];
+    S.doneMax = doneMax;
+
+    SKILLS.forEach(function (s) {
+      var base = sk[s].due > 0 && sk[s].done / sk[s].due >= OVERALL_THRESHOLD ? 1 : 0;
+      var gain = onLeave ? 0 : base + Math.min(sk[s].extra * 0.5, 1);
+      if (!gain) return;
+      var before = levelOf(sp[s]);
+      sp[s] += gain;
+      var after = levelOf(sp[s]);
+      if (isToday) spGainToday[s] = gain;
+      for (var L = before + 1; L <= after; L++) {
+        addCoins(d, 5 + (TIER_PROMO[L] || 0), 'level', s + ' 升到 Lv' + L + '「' + skillTitle(s, L) + '」');
+      }
+      level[s] = after;
+    });
+    var lv = SKILLS.map(function (s) { return level[s]; });
+    S.maxLevel = Math.max.apply(null, lv);
+    S.minLevel = Math.min.apply(null, lv);
+
+    // ---- weeks, running ----
+    S.weekQual = weekQual;
+    S.weekRunNow = S.weekRun + (weekQual >= 5 ? 1 : 0);
+    S.runWeekNow = runTarget ? runWeekRun + (weekRunMin >= runTarget ? 1 : 0) : 0;
+
+    // ---- clean days ----
+    if (slipStart && d >= slipStart && activeItems.length) {
+      var active = dayLogs.length > 0 || (trainBy[d] || []).length > 0 || dayCh.length > 0 || (slipsBy[d] || []).length > 0;
+      var slipIds = {};
+      (slipsBy[d] || []).forEach(function (r) { slipIds[r.item] = true; });
+      activeItems.forEach(function (i) {
+        if (slipIds[i.id]) cleanStreak[i.id] = 0;
+        else if (active) { cleanStreak[i.id]++; if (cleanStreak[i.id] > cleanBest[i.id]) cleanBest[i.id] = cleanStreak[i.id]; }
+      });
+      var mx = 0;
+      activeItems.forEach(function (i) { if (cleanStreak[i.id] > mx) mx = cleanStreak[i.id]; });
+      S.cleanMax = mx;
+      var fry = itemByName['炸物'], booze = itemByName['飲酒'];
+      S.cleanCombo = fry && booze ? Math.min(cleanStreak[fry], cleanStreak[booze]) : 0;
+    }
+
+    // ---- redemptions and hidden conditions ----
+    var dayReds = redBy[d] || [];
+    dayReds.forEach(function (r) { S.redCount++; spent += Number(r.cost) || 0; });
+    if (perfect) {
+      var bonusDue = 0, bonusDone = 0;
+      tasks.forEach(function (t) {
+        if (!isBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, d)) return;
+        bonusDue++;
+        if (isDone(t, d, idx)) bonusDone++;
+      });
+      if (bonusDue > 0 && bonusDue === bonusDone) S.fullDay = true;
+    }
+    if (S.streak >= 7 && qualified) {
+      var gap = false;
+      for (var q = 0; q < 7; q++) if (leave[addDays(d, -q)]) gap = true;
+      if (!gap) S.noLeave7 = true;
+    }
+
+    // ---- achievements ----
+    ACHIEVEMENTS.forEach(function (a) {
+      if (unlocked[a.id] || !a.test(S)) return;
+      unlocked[a.id] = d;
+      addCoins(d, a.coins, 'ach', '成就「' + a.name + '」');
+      if (!a.coins) events.push({ date: d, type: 'ach', coins: 0, text: '成就「' + a.name + '」' });
+    });
+  }
+  if (isLastDayOfMonth(today)) finalizeMonth(mk, today);
+
+  var out = emptyGame_(today);
+  var totalLevel = 0;
+  SKILLS.forEach(function (s) {
+    var L = level[s];
+    out.skills[s] = {
+      sp: sp[s], level: L, title: skillTitle(s, L), tier: tierName(L), frame: levelFrame(L),
+      levelStart: levelCum(L), nextAt: levelCum(L + 1), toNext: levelCum(L + 1) - sp[s], gain: spGainToday[s] || 0
+    };
+    totalLevel += L;
+  });
+  out.totalLevel = totalLevel;
+  out.totalTitle = totalTitle(totalLevel);
+  out.coins = { earned: earned, spent: spent, balance: Math.max(0, earned - spent), gain: coinsByDate[today] || 0 };
+  out.events = events;
+  out.achievements = ACHIEVEMENTS.map(function (a) {
+    return { id: a.id, cat: a.cat, name: a.name, desc: a.desc, coins: a.coins, hidden: !!a.hidden, unlocked: !!unlocked[a.id], date: unlocked[a.id] || '' };
+  });
+  out.streak = { current: S.streak, best: best };
+  out.perfectCount = S.perfectCount;
+  out.qualifiedTotal = qualifiedTotal;
+  out.month = { key: monthKey(today), qualified: monthQual, leave: monthLeave, days: daysInMonth_(monthKey(today)) };
+  out.clean = activeItems.map(function (i) { return { id: i.id, name: i.name, icon: i.icon, streak: cleanStreak[i.id], best: cleanBest[i.id] }; });
+  return out;
+}
+
+// ---- limited-time challenges ----
+
+// Draws one move from the 運動動作庫. rand in [0, 1). state: today's 精神好 / 普通 / 疲勞.
+// library rows: {move, kind, unit, easy, standard, hard, minutes, active}
+function drawChallenge(library, state, rand) {
+  var pool = library.filter(function (r) { return r.active !== false && Number(r.minutes) > 0 && (Number(r.standard) > 0 || Number(r.easy) > 0 || Number(r.hard) > 0); });
+  if (!pool.length) return null;
+  var r = pool[Math.min(pool.length - 1, Math.floor(rand * pool.length))];
+  var level = state === '疲勞' ? '簡單' : state === '精神好' ? '挑戰' : '標準';
+  var amount = Number(level === '簡單' ? r.easy : level === '挑戰' ? r.hard : r.standard) || Number(r.standard) || Number(r.easy) || Number(r.hard);
+  return { move: r.move, kind: r.kind || '', unit: r.unit || '次', amount: amount, level: level, minutes: Number(r.minutes) };
+}
+
+// Draws used on a date: resolved rows plus a challenge still running on this phone.
+function challengeDrawsLeft(date, challenges, pending) {
+  var used = challenges.filter(function (c) { return c.date === date; }).length + (pending ? 1 : 0);
+  return Math.max(0, CHALLENGE_DRAWS_PER_DAY - used);
+}
+
+function challengeText(c) {
+  return c.minutes + ' 分鐘內完成 ' + c.move + ' ' + c.amount + ' ' + c.unit;
 }

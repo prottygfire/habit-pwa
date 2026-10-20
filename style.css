@@ -96,3 +96,45 @@ details > summary { cursor: pointer; padding: 6px 0; color: var(--muted); }
 details ul { margin: 4px 0 0; padding-left: 20px; }
 details li { margin: 2px 0; overflow-wrap: anywhere; }
 input[type=date] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); min-height: 44px; }
+
+/* ---- gamification ---- */
+nav#tabs button { font-size: .8125rem; padding: 0 2px; }
+.item, .card { position: relative; }
+.gainline { display: flex; justify-content: space-between; font-size: .875rem; color: var(--muted); margin-top: 4px; }
+@keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.32); } 100% { transform: scale(1); } }
+.check.pop { animation: pop .45s ease-out; }
+@keyframes floatup { 0% { opacity: 0; transform: translateY(8px); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-26px); } }
+.float { position: absolute; right: 14px; top: 8px; font-weight: 700; color: var(--dc, var(--accent)); animation: floatup .6s ease-out forwards; pointer-events: none; z-index: 2; }
+#banner { position: fixed; left: 12px; right: 12px; top: 10px; z-index: 30; max-width: 600px; margin: 0 auto; padding: 12px 16px; border-radius: 14px; background: var(--accent); color: var(--accent-ink); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.25); transform: translateY(-140%); pointer-events: none; }
+#banner .bi { margin-right: 8px; }
+@keyframes bannerin { 0% { transform: translateY(-140%); } 15% { transform: translateY(0); } 85% { transform: translateY(0); } 100% { transform: translateY(-140%); } }
+#banner.show { animation: bannerin 1.5s ease-in-out forwards; }
+#banner.show.still { animation: none; transform: translateY(0); }
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 25; overflow: hidden; }
+.confetti i { position: absolute; top: -12px; width: 8px; height: 12px; border-radius: 2px; opacity: 0; animation: fall 1s ease-in forwards; }
+@keyframes fall { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--dx), 70vh) rotate(540deg); } }
+.slips { display: flex; flex-wrap: wrap; gap: 8px; }
+.slip { display: inline-flex; border: 1px solid var(--line); border-radius: 12px; background: var(--card); overflow: hidden; }
+.slip.has { border-color: var(--warn); }
+.slipmain, .slipundo { border: 0; background: none; min-height: 44px; padding: 0 12px; cursor: pointer; color: var(--text); }
+.slipundo { border-left: 1px solid var(--line); color: var(--warn); font-size: 1.2rem; padding: 0 14px; }
+.coinbox .big { font-size: 1.6rem; }
+.skill.frame-silver { border: 2px solid #b8c0c8; }
+.skill.frame-gold { border: 2px solid #e0b030; box-shadow: 0 0 0 2px rgba(224,176,48,.25); }
+.skill.frame-rainbow { border: 2px solid transparent; background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(120deg, #f29058, #f0b84a, #4cc38a, #6aa3f0, #d783c4) border-box; }
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.cal b { font-size: .75rem; color: var(--muted); font-weight: 500; }
+.cal i { font-style: normal; display: grid; place-items: center; height: 36px; border-radius: 10px; font-size: .8125rem; color: var(--muted); border: 1px solid transparent; }
+.cal i.empty { visibility: hidden; }
+.cal i.stamp { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.cal i.leave { background: var(--track); }
+.cal i.miss { color: var(--warn); }
+.cal i.future { opacity: .5; }
+.cal i.now { border-color: var(--accent); }
+.badges { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.badge { border: 1px dashed var(--line); border-radius: 12px; padding: 8px 10px; opacity: .65; }
+.badge.on { border: 1px solid var(--accent); opacity: 1; background: var(--card); }
+.badge .bname { font-weight: 600; font-size: .9rem; overflow-wrap: anywhere; }
+.challenge .timer { font-size: 2rem; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.challenge .timer.small { font-size: 1.15rem; }
+.challenge .timer.over { color: var(--warn); }

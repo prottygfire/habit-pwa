@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-20 v7';
+  var VERSION = '2026-10-20 v8';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -120,7 +120,7 @@
       return api('bootstrap').then(function (res) {
         state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
-          library: res.library || [], challenges: res.challenges || [] };
+          library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [] };
         state.rev++;
         LS.set('habit.data', state.data);
       });
@@ -146,7 +146,7 @@
 
   function ctx() {
     var d = state.data;
-    return { tasks: d.tasks, logs: d.logs, idx: indexLogs(d.logs), leave: indexLeave(d.leave) };
+    return { tasks: d.tasks, logs: d.logs, idx: indexLogs(d.logs, d.exempts || []), leave: indexLeave(d.leave) };
   }
 
   function dateTitle(s) {
@@ -166,7 +166,7 @@
   function gameData() {
     var d = state.data;
     return { tasks: d.tasks, logs: d.logs, leave: d.leave, train: dget('train'), slips: dget('slips'), slipItems: dget('slipItems'),
-      redemptions: dget('redemptions'), challenges: dget('challenges'), settings: d.settings || {} };
+      redemptions: dget('redemptions'), challenges: dget('challenges'), exempts: dget('exempts'), settings: d.settings || {} };
   }
 
   var gameCache = { rev: -1, today: '', g: null };
@@ -178,7 +178,7 @@
   function fmtPts(n) { return n % 1 ? n.toFixed(1) : String(n); }
 
   function perfectNow(date) {
-    var st = dayStats(state.data.tasks, date, indexLogs(state.data.logs), indexLeave(state.data.leave));
+    var st = dayStats(state.data.tasks, date, indexLogs(state.data.logs, dget('exempts')), indexLeave(state.data.leave));
     return !st.leave && st.due > 0 && st.done === st.due;
   }
 
@@ -251,6 +251,27 @@
     LS.set('habit.seen', cur);
     if (items.length > 3) items = [{ icon: '🎉', text: '新增 ' + items.length + ' 項成就與升級，到「成就」頁看看' }];
     items.forEach(function (i) { pushBanner(i.icon, i.text); });
+  }
+
+  // ---- 免責券: waive one 必做 task on one day ----
+
+  function tickets() { return ticketsLeft(dget('redemptions'), dget('exempts')); }
+
+  function canExempt(t, date, c) {
+    if (isAccumFreq(t.freq) || isBonus(t) || !isScheduled(t, date) || isDone(t, date, c.idx) || isExempt(t, date, c.idx) || c.leave[date]) return false;
+    var n = daysBetween(today(), date);
+    return n >= -7 && n <= 14 && tickets() > 0;
+  }
+
+  function exemptTask(t, date) {
+    if (!confirm('用 1 張免責券，抵免 ' + date + ' 的「' + t.name + '」？這天它不算失敗，也不加技能點。')) return;
+    state.data.exempts = dget('exempts').concat([{ date: date, taskId: t.id }]);
+    enqueue('exempt', { date: date, taskId: t.id });
+  }
+
+  function unexemptTask(t, date) {
+    state.data.exempts = dget('exempts').filter(function (e) { return !(e.date === date && e.taskId === t.id); });
+    enqueue('unexempt', { date: date, taskId: t.id });
   }
 
   // ---- check-in actions (local first, then queued) ----
@@ -455,8 +476,9 @@
   function taskItem(t, c, date) {
     var done = isDone(t, date, c.idx), tier = tierOn(t, date, c.idx), note = noteOn(t, date, c.idx);
     var streak = taskStreak(t, date, c.idx, c.leave);
-    var tiered = !!(t.tierUp || t.tierDown);
+    var tiered = !!(t.tierUp || t.tierDown), ex = isExempt(t, date, c.idx);
     var sub = [h('span', { class: 'chip dc' }, t.dim)];
+    if (ex) sub.push(h('span', { class: 'chip on' }, '🎫 免責'));
     if (isBonus(t)) sub.push(h('span', { class: 'chip' }, '加分'));
     if (done && tier && tier !== '標準') sub.push(h('span', { class: 'chip on' }, tier));
     if (streak > 0) sub.push(h('span', { class: 'muted' }, '🔥' + streak + '天'));
@@ -465,7 +487,7 @@
       else if (done) uncheckTask(t, date);
       else checkTask(t, date, '標準', '');
     };
-    return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') },
+    return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') + (ex ? ' exempt' : '') },
       h('button', { class: 'check' + (state.pop && state.pop.id === t.id && PREFS.anim ? ' pop' : ''), 'aria-pressed': String(done), 'aria-label': (done ? '取消完成 ' : '完成 ') + t.name, onclick: tap }, '✓'),
       state.pop && state.pop.id === t.id && state.pop.text && PREFS.anim ? h('span', { class: 'float', 'aria-hidden': 'true' }, state.pop.text) : null,
       h('div', { class: 'grow' },
@@ -473,6 +495,8 @@
         h('div', null, sub),
         done && note ? h('div', { class: 'muted' }, note) : null,
         !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : null),
+      ex ? h('button', { class: 'btn small', 'aria-label': '取消免責 ' + t.name, onclick: function () { unexemptTask(t, date); } }, '取消免責') : null,
+      canExempt(t, date, c) ? h('button', { class: 'btn small', 'aria-label': '用免責券抵免 ' + t.name, onclick: function () { exemptTask(t, date); } }, '🎫') : null,
       tiered ? h('button', { class: 'btn small', 'aria-label': t.name + ' 選擇進階或最低', onclick: function () { state.modal = { type: 'tier', task: t, date: date }; renderModal(); } }, '⋯') : null,
       t.link ? h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn small' }, '開啟') : null);
   }
@@ -718,14 +742,15 @@
     var list = rewards.length ? rewards.map(function (r) {
       var can = g.coins.balance >= r.cost;
       return h('div', { class: 'row', style: 'margin:8px 0' },
-        h('div', { class: 'grow' }, h('div', { class: 'name' }, r.name), h('div', { class: 'muted' }, '⭐ ' + r.cost + (r.note ? '・' + r.note : ''))),
+        h('div', { class: 'grow' }, h('div', { class: 'name' }, (r.type === '免責券' ? '🎫 ' : '') + r.name), h('div', { class: 'muted' }, '⭐ ' + r.cost + (r.note ? '・' + r.note : ''))),
         h('button', { class: 'btn small' + (can ? ' primary' : ''), disabled: !can, onclick: function () {
           if (!confirm('用 ' + r.cost + ' 星幣兌換「' + r.name + '」？')) return;
-          api('redeem', { rewardId: r.id }).then(function (res) { toast('已兌換「' + res.result.name + '」，犒賞自己吧'); closeModal(); return refresh(); })
+          api('redeem', { rewardId: r.id }).then(function (res) { toast(res.result.type === '免責券' ? '已兌換免責券，到「今日」頁用掉' : '已兌換「' + res.result.name + '」，犒賞自己吧'); closeModal(); return refresh(); })
             .catch(function (e) { toast(e.network ? '兌換需要網路' : e.message); });
         } }, can ? '兌換' : '星幣不夠'));
     }) : [h('p', { class: 'muted' }, '還沒有可兌換的獎勵。到試算表「獎勵」分頁填寫名稱和星幣數，並把「啟用」改成 TRUE。')];
-    return modalShell('兌換獎勵（⭐ ' + g.coins.balance + '）', h('div', null, list, h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn grow', onclick: closeModal }, '關閉'))));
+    return modalShell('兌換獎勵（⭐ ' + g.coins.balance + '）', h('div', null,
+      h('p', { class: 'muted' }, '獎勵是額外的犒賞，不是許可證：玩樂（電影、遊戲、出去玩）隨時可以做，不需要兌換。'), list, h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn grow', onclick: closeModal }, '關閉'))));
   }
 
   function monthCalendar(g) {
@@ -784,7 +809,7 @@
         h('div', { class: 'row' },
           h('div', { class: 'grow' }, h('div', { class: 'big' }, '⭐ ', h('b', null, g.coins.balance)), h('div', { class: 'muted' }, '累計賺到 ' + g.coins.earned + '，已兌換 ' + g.coins.spent)),
           h('button', { class: 'btn primary', onclick: function () { state.modal = { type: 'redeem', task: { id: 'redeem' }, date: t0 }; renderModal(); } }, '兌換獎勵')),
-        h('div', { class: 'muted', style: 'margin-top:8px' }, '總等級 ' + g.totalLevel + '／100「' + g.totalTitle + '」・目前連續 ' + g.streak.current + ' 天（最長 ' + g.streak.best + '）・完美日 ' + g.perfectCount + ' 次'))
+        h('div', { class: 'muted', style: 'margin-top:8px' }, '🎫 免責券 ' + g.tickets + ' 張・總等級 ' + g.totalLevel + '／100「' + g.totalTitle + '」・目前連續 ' + g.streak.current + ' 天（最長 ' + g.streak.best + '）・完美日 ' + g.perfectCount + ' 次'))
     ];
     nodes.push(h('h2', null, '技能'));
     SKILLS.forEach(function (s) { nodes.push(skillCard(s, g)); });
@@ -803,7 +828,7 @@
     nodes.push(h('h2', null, '兌換紀錄'));
     if (!reds.length) nodes.push(h('p', { class: 'muted' }, '還沒有兌換過。'));
     reds.slice(0, 10).forEach(function (r) {
-      nodes.push(h('div', { class: 'card row' }, h('div', { class: 'grow' }, h('div', { class: 'name' }, r.name), h('div', { class: 'muted' }, r.date + '・⭐ ' + r.cost)),
+      nodes.push(h('div', { class: 'card row' }, h('div', { class: 'grow' }, h('div', { class: 'name' }, (r.type === '免責券' ? '🎫 ' : '') + r.name), h('div', { class: 'muted' }, r.date + '・⭐ ' + r.cost)),
         r.date === t0 ? h('button', { class: 'btn small danger', onclick: function () {
           if (!confirm('撤銷這筆兌換？')) return;
           api('undoRedeem', { ts: r.ts }).then(refresh).catch(function (e) { toast(e.network ? '需要網路' : e.message); });

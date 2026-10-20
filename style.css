@@ -138,3 +138,5 @@ nav#tabs button { font-size: .8125rem; padding: 0 2px; }
 .challenge .timer { font-size: 2rem; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
 .challenge .timer.small { font-size: 1.15rem; }
 .challenge .timer.over { color: var(--warn); }
+
+.item.exempt { border-style: dashed; border-left-style: solid; }

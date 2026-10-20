@@ -103,8 +103,10 @@ function periodRange(freq, s) {
 }
 
 // logs -> lookup. 'date|id' = checked, 'm|date|id' = minutes, 't|…' = tier, 'n|…' = note. leave -> lookup set.
-function indexLogs(logs) {
+// exempts: [{date, taskId}] days on which a 免責券 waived that task; they are looked up as 'x|date|id'.
+function indexLogs(logs, exempts) {
   var idx = {};
+  for (var x = 0; x < (exempts || []).length; x++) idx['x|' + exempts[x].date + '|' + exempts[x].taskId] = true;
   for (var i = 0; i < logs.length; i++) {
     var l = logs[i], k = l.date + '|' + l.taskId;
     idx[k] = true;
@@ -122,6 +124,8 @@ function indexLeave(days) {
 }
 
 function isDone(task, date, idx) { return idx[date + '|' + task.id] === true; }
+// Waived by a 免責券: the task is not required that day (no miss, no point, the streak just passes over it).
+function isExempt(task, date, idx) { return idx['x|' + date + '|' + task.id] === true; }
 function minutesOn(task, date, idx) { return idx['m|' + date + '|' + task.id] || 0; }
 function tierOn(task, date, idx) { return isDone(task, date, idx) ? idx['t|' + date + '|' + task.id] : ''; }
 function noteOn(task, date, idx) { return idx['n|' + date + '|' + task.id] || ''; }
@@ -170,7 +174,7 @@ function isDue(task, date, idx) {
 
 // Nag only for 必做 tasks: fixed ones always; accumulating ones once the remaining days are too few.
 function needsReminder(task, date, idx) {
-  if (isBonus(task) || !task.remind || !isDue(task, date, idx)) return false;
+  if (isBonus(task) || !task.remind || isExempt(task, date, idx) || !isDue(task, date, idx)) return false;
   if (!isAccumFreq(task.freq)) return !isDone(task, date, idx);
   var p = progress(task, date, idx);
   var left = p.target - p.done, daysLeft = daysBetween(date, p.end) + 1;
@@ -187,7 +191,7 @@ function dayStats(tasks, date, idx, leave) {
   var due = 0, done = 0;
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    if (!isFixedMust_(t) || !isScheduled(t, date)) continue;
+    if (!isFixedMust_(t) || !isScheduled(t, date) || isExempt(t, date, idx)) continue;
     due++;
     if (isDone(t, date, idx)) done++;
   }
@@ -219,9 +223,9 @@ function taskStreak(task, date, idx, leave) {
     return n;
   }
   var d = date;
-  if (isScheduled(task, d) && !leave[d] && !isDone(task, d, idx)) d = addDays(d, -1);
+  if (isScheduled(task, d) && !leave[d] && !isExempt(task, d, idx) && !isDone(task, d, idx)) d = addDays(d, -1);
   for (i = 0; i < LOOKBACK_DAYS; i++, d = addDays(d, -1)) {
-    if (leave[d] || !isScheduled(task, d)) continue;
+    if (leave[d] || !isScheduled(task, d) || isExempt(task, d, idx)) continue;
     if (isDone(task, d, idx)) n++;
     else break;
   }
@@ -248,7 +252,7 @@ function dimensionRates(tasks, start, end, today, idx, leave) {
     if (leave[d]) continue;
     for (var i = 0; i < tasks.length; i++) {
       var t = tasks[i];
-      if (!isFixedMust_(t) || !isScheduled(t, d)) continue;
+      if (!isFixedMust_(t) || !isScheduled(t, d) || isExempt(t, d, idx)) continue;
       var o = out[t.dim] || (out[t.dim] = { due: 0, done: 0, rate: null });
       o.due++;
       if (isDone(t, d, idx)) o.done++;
@@ -654,6 +658,13 @@ var ACHIEVEMENTS = [
   { id: 'hid3', cat: '隱藏', hidden: true, name: '七天全勤', desc: '連續 7 天達標，而且沒用請假日', coins: 8, test: function (S) { return S.noLeave7; } }
 ];
 
+// 免責券 owned = redeemed rewards of type 免責券 minus the waivers already used.
+function ticketsLeft(redemptions, exempts) {
+  var bought = 0;
+  (redemptions || []).forEach(function (r) { if (r.type === '免責券') bought++; });
+  return Math.max(0, bought - (exempts || []).length);
+}
+
 function emptyGame_(today) {
   var skills = {};
   SKILLS.forEach(function (s) {
@@ -662,7 +673,7 @@ function emptyGame_(today) {
   return {
     today: today, skills: skills, totalLevel: 5, totalTitle: totalTitle(5), coins: { earned: 0, spent: 0, balance: 0, gain: 0 }, events: [],
     achievements: ACHIEVEMENTS.map(function (a) { return { id: a.id, cat: a.cat, name: a.name, desc: a.desc, coins: a.coins, hidden: !!a.hidden, unlocked: false, date: '' }; }),
-    streak: { current: 0, best: 0 }, perfectCount: 0, qualifiedTotal: 0,
+    streak: { current: 0, best: 0 }, perfectCount: 0, qualifiedTotal: 0, tickets: 0,
     month: { key: monthKey(today), qualified: 0, leave: 0, days: daysInMonth_(monthKey(today)) }, clean: []
   };
 }
@@ -671,7 +682,7 @@ function computeGame(data, today) {
   var tasks = data.tasks || [], logs = data.logs || [], train = data.train || [], leaveArr = data.leave || [];
   var slips = data.slips || [], items = data.slipItems || [], reds = data.redemptions || [], chs = data.challenges || [];
   var settings = data.settings || {};
-  var idx = indexLogs(logs), leave = indexLeave(leaveArr);
+  var idx = indexLogs(logs, data.exempts || []), leave = indexLeave(leaveArr);
   var byId = {};
   tasks.forEach(function (t) { byId[t.id] = t; });
   var logsBy = groupBy_(logs, 'date'), trainBy = groupBy_(train, 'date'), slipsBy = groupBy_(slips, 'date');
@@ -768,7 +779,7 @@ function computeGame(data, today) {
     var sk = {};
     SKILLS.forEach(function (s) { sk[s] = { due: 0, done: 0, extra: 0 }; });
     tasks.forEach(function (t) {
-      if (!isFixedMust_(t) || !isScheduled(t, d)) return;
+      if (!isFixedMust_(t) || !isScheduled(t, d) || isExempt(t, d, idx)) return;
       var s = skillOf(t);
       if (!s) return;
       sk[s].due++;
@@ -887,6 +898,7 @@ function computeGame(data, today) {
     return { id: a.id, cat: a.cat, name: a.name, desc: a.desc, coins: a.coins, hidden: !!a.hidden, unlocked: !!unlocked[a.id], date: unlocked[a.id] || '' };
   });
   out.streak = { current: S.streak, best: best };
+  out.tickets = ticketsLeft(reds, data.exempts || []);
   out.perfectCount = S.perfectCount;
   out.qualifiedTotal = qualifiedTotal;
   out.month = { key: monthKey(today), qualified: monthQual, leave: monthLeave, days: daysInMonth_(monthKey(today)) };

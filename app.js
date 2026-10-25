@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-20 v9';
+  var VERSION = '2026-10-27 v11';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -13,7 +13,7 @@
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
   var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
-  var TABS = ['today', 'train', 'game', 'tasks', 'plan', 'settings'];
+  var TABS = ['today', 'ledger', 'train', 'health', 'more', 'game', 'tasks', 'plan', 'settings'];
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -121,7 +121,8 @@
       return api('bootstrap').then(function (res) {
         state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
-          library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [] };
+          library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [],
+          health: res.health || [], checkins: res.checkins || [], strengthMoves: res.strengthMoves || [], strength: res.strength || [], goalMap: res.goalMap || [] };
         state.rev++;
         LS.set('habit.data', state.data);
       });
@@ -147,7 +148,12 @@
 
   function ctx() {
     var d = state.data;
-    return { tasks: d.tasks, logs: d.logs, idx: indexLogs(d.logs, d.exempts || []), leave: indexLeave(d.leave) };
+    return { tasks: d.tasks, logs: d.logs, idx: indexLogs(d.logs, d.exempts || [], extras()), leave: indexLeave(d.leave) };
+  }
+
+  // Low-energy days and the 核心 tasks, from the 訓練 state rows and the settings.
+  function extras() {
+    return extrasFrom(dget('train'), (state.data && state.data.settings) || {});
   }
 
   function dateTitle(s) {
@@ -179,7 +185,7 @@
   function fmtPts(n) { return n % 1 ? n.toFixed(1) : String(n); }
 
   function perfectNow(date) {
-    var st = dayStats(state.data.tasks, date, indexLogs(state.data.logs, dget('exempts')), indexLeave(state.data.leave));
+    var st = dayStats(state.data.tasks, date, indexLogs(state.data.logs, dget('exempts'), extras()), indexLeave(state.data.leave));
     return !st.leave && st.due > 0 && st.done === st.due;
   }
 
@@ -335,6 +341,8 @@
     enqueue('trainSet', { date: date, item: item.id, done: true, minutes: minutes, rpe: rpe, version: version, note: note });
     var rt = runTask();
     if (item.isRun && rt && minutes > 0) saveMinutes(rt, date, minutes);
+    if (item.kind === 'strength') tickByName(/重量訓練/, date, '健身房');
+    if (item.kind === 'interval') tickByName(/壺鈴間歇/, date, '');
   }
 
   function trainUndo(item, date) {
@@ -467,7 +475,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
+    host.appendChild(m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -477,9 +485,10 @@
   function taskItem(t, c, date) {
     var done = isDone(t, date, c.idx), tier = tierOn(t, date, c.idx), note = noteOn(t, date, c.idx);
     var streak = taskStreak(t, date, c.idx, c.leave);
-    var tiered = !!(t.tierUp || t.tierDown), ex = isExempt(t, date, c.idx);
+    var tiered = !!(t.tierUp || t.tierDown), ex = isExempt(t, date, c.idx), rel = isRelieved(t, date, c.idx);
     var sub = [h('span', { class: 'chip dc' }, t.dim)];
     if (ex) sub.push(h('span', { class: 'chip on' }, '🎫 免責'));
+    if (rel && !done) sub.push(h('span', { class: 'chip' }, '🌙 今天放過'));
     if (isBonus(t)) sub.push(h('span', { class: 'chip' }, '加分'));
     if (done && tier && tier !== '標準') sub.push(h('span', { class: 'chip on' }, tier));
     if (streak > 0) sub.push(h('span', { class: 'muted' }, '🔥' + streak + '天'));
@@ -488,7 +497,7 @@
       else if (done) uncheckTask(t, date);
       else checkTask(t, date, '標準', '');
     };
-    return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') + (ex ? ' exempt' : '') },
+    return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') + (ex ? ' exempt' : '') + (rel && !done ? ' relieved' : '') },
       h('button', { class: 'check' + (state.pop && state.pop.id === t.id && PREFS.anim ? ' pop' : ''), 'aria-pressed': String(done), 'aria-label': (done ? '取消完成 ' : '完成 ') + t.name, onclick: tap }, '✓'),
       state.pop && state.pop.id === t.id && state.pop.text && PREFS.anim ? h('span', { class: 'float', 'aria-hidden': 'true' }, state.pop.text) : null,
       h('div', { class: 'grow' },
@@ -499,6 +508,7 @@
       ex ? h('button', { class: 'btn small', 'aria-label': '取消免責 ' + t.name, onclick: function () { unexemptTask(t, date); } }, '取消免責') : null,
       canExempt(t, date, c) ? h('button', { class: 'btn small', 'aria-label': '用免責券抵免 ' + t.name, onclick: function () { exemptTask(t, date); } }, '🎫') : null,
       tiered ? h('button', { class: 'btn small', 'aria-label': t.name + ' 選擇進階或最低', onclick: function () { state.modal = { type: 'tier', task: t, date: date }; renderModal(); } }, '⋯') : null,
+      ledgerKindOf(t) && !done ? h('button', { class: 'btn small primary', onclick: function () { openLedger(ledgerKindOf(t), date); } }, '填寫') : null,
       t.link ? h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn small' }, '開啟') : null);
   }
 
@@ -554,6 +564,7 @@
       h('button', { class: 'btn small' + (onLeave ? ' primary' : ''), onclick: function () { toggleLeave(date, !onLeave); } }, onLeave ? '已請假（點一下取消）' : '這天請假（不影響連續天數）')
     ];
     if (onLeave) nodes.push(h('p', { class: 'muted' }, '請假日不提醒，也不計入完成率。'));
+    if (!onLeave) nodes.push(dayStateBar(date));
     groupBySlot(daily, c, date, nodes);
     if (accum.length) {
       nodes.push(h('h2', { id: 'accum' }, '累計目標'));
@@ -561,6 +572,7 @@
     }
     if (!daily.length && !accum.length) nodes.push(h('p', { class: 'muted' }, '這天沒有任務。到「任務」頁新增。'));
     renderSlips(date).forEach(function (n) { nodes.push(n); });
+    nodes.push(checkinCard(date));
     return nodes;
   }
 
@@ -742,15 +754,20 @@
     } else {
       nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・' + (future ? '這天' : '今天') + '有哪些可以做，做了就記，沒做也沒關係。'));
       if (menu.finished) nodes.push(h('p', { class: 'muted' }, '12 週計畫已走完，先沿用第 12 週的內容；想換新計畫再告訴我。'));
+      nodes.push(weekLoadCard(date, start));
       nodes.push(h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
         return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s);
       })));
       nodes.push(h('p', { class: 'muted' }, st === '疲勞' ? '疲勞：卡片會改給輕鬆版，需要的話直接休息。' : st === '精神好' ? '精神好：有進階版的項目會多給一個選擇。' : '選今天的狀態，建議會跟著調整（可不選）。'));
       renderChallenge(date).forEach(function (n) { nodes.push(n); });
       nodes.push(h('div', { class: 'card' }, h('div', null, '本週已做 ', h('b', null, sum.sessions), ' 項、累計 ', h('b', null, sum.minutes), ' 分鐘'), h('div', { class: 'muted' }, '只是記錄，這裡沒有目標，也不影響必做完成率。')));
-      var fixed = menu.items.filter(function (i) { return i.fixed; }), free = menu.items.filter(function (i) { return !i.fixed; });
-      if (fixed.length) { nodes.push(h('h2', null, '已排定')); fixed.forEach(function (i) { nodes.push(trainCard(i, date, st)); }); }
-      if (free.length) { nodes.push(h('h2', null, '可以做')); free.forEach(function (i) { nodes.push(trainCard(i, date, st)); }); }
+      var fixed = menu.items.filter(function (i) { return i.fixed; }), core = menu.items.filter(function (i) { return !i.fixed && i.tier !== 'opt'; });
+      var free = menu.items.filter(function (i) { return !i.fixed && i.tier === 'opt'; });
+      function addAll(list) { list.forEach(function (i) { trainNodes(i, date, st).forEach(function (n) { nodes.push(n); }); }); }
+      if (core.length) { nodes.push(h('h2', null, '今天排定')); addAll(core); }
+      if (fixed.length) { nodes.push(h('h2', null, '固定的課')); addAll(fixed); }
+      if (free.length) { nodes.push(h('h2', null, '可以做')); addAll(free); }
+      if (!future && !core.some(function (i) { return i.kind === 'strength-home'; })) { var extra = extraStrengthCard(date); if (extra) nodes.push(extra); }
       var wkStart = addDays(date, -(weekdayOf(date) - 1)), rows = [];
       for (var k = 0; k < 7; k++) {
         var d = addDays(wkStart, k), m = trainingMenu(d, start);
@@ -765,6 +782,708 @@
         api('setSetting', { key: 'trainStart', value: picker.value }).then(refresh).catch(function (e) { toast(e.network ? '需要網路' : e.message); });
       } }, '儲存')));
     return nodes;
+  }
+
+  // ---- 健康趨勢、每日自評、力量紀錄、目標對應、月回顧 (10/26) ----
+
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // points: [{date, value}] in date order. invert: a bigger number is drawn lower (bedtime, heart rate: higher is worse).
+  function sparkline(points, o) {
+    o = o || {};
+    if (points.length < 2) return h('div', { class: 'muted' }, '資料還不夠畫圖（至少要 2 天）');
+    var W = 300, H = o.height || 64, P = 6;
+    var vals = points.map(function (p) { return p.value; });
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    if (hi === lo) { hi += 1; lo -= 1; }
+    var d0 = points[0].date, d1 = points[points.length - 1].date, span = Math.max(1, daysBetween(d0, d1));
+    var path = points.map(function (p, i) {
+      var x = P + (W - 2 * P) * daysBetween(d0, p.date) / span;
+      var t = (p.value - lo) / (hi - lo);
+      var y = P + (H - 2 * P) * (o.invert ? t : 1 - t);
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }).join(' ');
+    var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'spark', role: 'img', 'aria-label': o.label || '趨勢圖', preserveAspectRatio: 'none' });
+    svg.appendChild(svgEl('path', { d: path, fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' }));
+    var fmt = o.fmt || String;
+    return h('div', null, svg,
+      h('div', { class: 'row muted', style: 'justify-content:space-between' }, h('span', null, d0.slice(5) + '　' + fmt(points[0].value)), h('span', null, d1.slice(5) + '　' + fmt(points[points.length - 1].value))));
+  }
+
+  function hoursText(min) { return min === null || min === undefined || isNaN(min) ? '—' : (min / 60).toFixed(1); }
+  function num1(x) { return x === null || x === undefined || isNaN(x) ? '—' : (Math.round(x * 10) / 10).toString(); }
+
+  // For the tiered tasks 就寢 and 步數: how the last `days` days split into 進階 / 標準 / 最低 / 沒達到.
+  function tierLines(days) {
+    var c = ctx(), t0 = today(), out = [];
+    c.tasks.forEach(function (t) {
+      if (!t.active || isAccumFreq(t.freq) || !(t.tierUp || t.tierDown) || !/就寢|步數/.test(t.name)) return;
+      var n = { '進階': 0, '標準': 0, '最低': 0, miss: 0 };
+      for (var i = 0; i < days; i++) {
+        var d = addDays(t0, -i);
+        if (!isScheduled(t, d) || c.leave[d]) continue;
+        if (isDone(t, d, c.idx)) { var tr = tierOn(t, d, c.idx); n[tr] = (n[tr] || 0) + 1; }
+        else if (d !== t0) n.miss++;
+      }
+      out.push(h('div', { style: 'margin:6px 0' }, h('b', null, t.name), '　進階 ' + n['進階'] + '・標準 ' + n['標準'] + '・最低 ' + n['最低'] + '・沒達到 ' + n.miss));
+    });
+    return out;
+  }
+
+  function trendCard(icon, title, summary, pts, o) {
+    var card = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon), title));
+    if (summary) card.appendChild(h('div', { class: 'muted' }, summary));
+    if (pts && pts.length) card.appendChild(sparkline(pts, o));
+    return card;
+  }
+
+  function renderHealth() {
+    var t0 = today(), hs = dget('health'), nodes = [h('h1', null, '健康趨勢')];
+    if (!hs.length) nodes.push(h('p', { class: 'muted' }, '還沒有健康資料。手機的「健康同步」App 會把睡眠、步數、心率、體重傳到試算表「健康」分頁。'));
+
+    var sl = sleepSummary(hs, t0);
+    var sleepCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '😴'), '睡眠（近 7 天）'));
+    if (!sl.n) sleepCard.appendChild(h('div', { class: 'muted' }, '近 7 天沒有睡眠資料。'));
+    else {
+      sleepCard.appendChild(h('div', { class: 'stat' },
+        h('span', null, '平均 ', h('b', null, hoursText(sl.sleepMin)), ' 小時'),
+        h('span', null, '入睡 ', h('b', null, fmtClock_(sl.bed))),
+        h('span', null, '起床 ', h('b', null, fmtClock_(sl.wake)))));
+      sleepCard.appendChild(h('div', { class: 'muted' }, (sl.bedSd !== null ? '入睡時間前後差約 ' + Math.round(sl.bedSd) + ' 分鐘' : '') + (sl.deepMin ? '・深眠平均 ' + Math.round(sl.deepMin) + ' 分' : '')));
+      if (sl.alert) sleepCard.appendChild(h('div', { class: 'alert' }, '⚠️ 近 7 天平均入睡，比前兩週晚了 ' + Math.round(sl.drift) + ' 分鐘。睡眠影響恢復、荷爾蒙和皮膚，今晚試著提早 15 分鐘上床。'));
+      else if (sl.drift !== null && sl.drift <= -20) sleepCard.appendChild(h('div', { class: 'good' }, '👍 近 7 天平均入睡，比前兩週早了 ' + Math.round(-sl.drift) + ' 分鐘。'));
+    }
+    var bedPts = healthSeries(hs, t0, 28, 'bedLine'), durPts = healthSeries(hs, t0, 28, 'sleepMin');
+    if (bedPts.length) { sleepCard.appendChild(h('div', { class: 'muted', style: 'margin-top:8px' }, '入睡時間（近 28 天，越高越早）')); sleepCard.appendChild(sparkline(bedPts, { invert: true, fmt: fmtClock_, label: '入睡時間趨勢' })); }
+    if (durPts.length) { sleepCard.appendChild(h('div', { class: 'muted', style: 'margin-top:8px' }, '睡眠時數（近 28 天）')); sleepCard.appendChild(sparkline(durPts, { fmt: function (v) { return hoursText(v) + ' 小時'; }, label: '睡眠時數趨勢' })); }
+    nodes.push(sleepCard);
+
+    var tl = tierLines(28);
+    if (tl.length) nodes.push(h('div', { class: 'card' }, h('div', { class: 'name' }, '三檔任務（近 28 天）'), tl, h('div', { class: 'muted' }, '三檔都算完成；看「進階」和「標準」有沒有變多。')));
+
+    var rhrPts = healthSeries(hs, t0, 28, 'rhr'), stepPts = healthSeries(hs, t0, 28, 'steps');
+    var rhrAvg = mean_(rhrPts.slice(-7).map(function (p) { return p.value; })), stepAvg = mean_(stepPts.slice(-7).map(function (p) { return p.value; }));
+    nodes.push(trendCard('❤️', '靜止心率', rhrAvg !== null ? '近 7 天平均 ' + Math.round(rhrAvg) + ' bpm（越低通常代表心肺越好、恢復越好）' : '還沒有心率資料', rhrPts, { invert: true, fmt: function (v) { return v + ' bpm'; }, label: '靜止心率趨勢' }));
+    nodes.push(trendCard('👟', '步數', stepAvg !== null ? '近 7 天平均 ' + Math.round(stepAvg) + ' 步' : '還沒有步數資料', stepPts, { fmt: function (v) { return Math.round(v) + ' 步'; }, label: '步數趨勢' }));
+
+    var wPts = healthSeries(hs, t0, 90, 'weight'), fPts = healthSeries(hs, t0, 90, 'bodyFat');
+    if (wPts.length || fPts.length) {
+      var wCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '⚖️'), '體重與體脂（近 90 天）'));
+      if (wPts.length) {
+        var wl = wPts[wPts.length - 1], wf = wPts[0];
+        wCard.appendChild(h('div', { class: 'stat' }, h('span', null, '體重 ', h('b', null, num1(wl.value)), ' kg'), wPts.length > 1 ? h('span', { class: 'muted' }, (wl.value - wf.value >= 0 ? '+' : '') + num1(wl.value - wf.value) + ' kg（自 ' + wf.date.slice(5) + '）') : null));
+        wCard.appendChild(sparkline(wPts, { fmt: function (v) { return num1(v) + ' kg'; }, label: '體重趨勢' }));
+      }
+      if (fPts.length) {
+        var fl = fPts[fPts.length - 1], ff = fPts[0];
+        wCard.appendChild(h('div', { class: 'stat', style: 'margin-top:8px' }, h('span', null, '體脂 ', h('b', null, num1(fl.value)), ' %'), fPts.length > 1 ? h('span', { class: 'muted' }, (fl.value - ff.value >= 0 ? '+' : '') + num1(fl.value - ff.value) + ' %（自 ' + ff.date.slice(5) + '）') : null));
+        wCard.appendChild(sparkline(fPts, { fmt: function (v) { return num1(v) + ' %'; }, label: '體脂趨勢' }));
+      }
+      nodes.push(wCard);
+    } else {
+      nodes.push(h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '⚖️'), '體重與體脂'), h('div', { class: 'muted' }, '還沒有資料。FitDays 要開啟「寫入 Health Connect」，站上體脂計量一次，再到「健康同步」App 按「補抓近 30 天」。')));
+    }
+
+    var cs = checkinSummary(dget('checkins'), t0, 7), cp = checkinSummary(dget('checkins'), addDays(t0, -7), 7);
+    var cCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '📝'), '自評（近 7 天，共 ' + cs.n + ' 天有記）'));
+    if (!cs.n) cCard.appendChild(h('div', { class: 'muted' }, '到「今日」頁最下面的「今日自評」記一下，10 秒就好。'));
+    else {
+      CHECKIN_METRICS.forEach(function (m) {
+        var v = cs.avg[m.key], pv = cp.avg[m.key];
+        var trend = v !== null && pv !== null ? (v - pv > 0.3 ? (m.worseHigh ? '　⚠️ 比前 7 天高' : '　▲') : v - pv < -0.3 ? (m.worseHigh ? '　▲ 比前 7 天低' : '　▼') : '') : '';
+        cCard.appendChild(bar(m.label, v !== null ? v.toFixed(1) + ' / 5' + trend : '—', v === null ? 0 : v / 5));
+      });
+      Object.keys(cs.extra).forEach(function (k) { cCard.appendChild(bar(k, cs.extra[k].toFixed(1) + ' / 5', cs.extra[k] / 5)); });
+      var fl2 = CHECKIN_FLAGS.filter(function (f) { return cs.flags[f.name]; }).map(function (f) { return f.name + ' ' + cs.flags[f.name] + ' 天'; });
+      if (fl2.length) cCard.appendChild(h('div', { class: 'muted' }, fl2.join('・')));
+    }
+    nodes.push(cCard);
+    return nodes;
+  }
+
+  // ---- 每日自評 ----
+
+  function setCheckin(date, key, value, extraName) {
+    var cur = Object.assign({ date: date, energy: 0, mood: 0, stress: 0, sore: 0, flags: [], extra: {} }, checkinOn(dget('checkins'), date) || {});
+    cur.flags = (cur.flags || []).slice();
+    cur.extra = Object.assign({}, cur.extra || {});
+    if (extraName) { if (value) cur.extra[extraName] = value; else delete cur.extra[extraName]; }
+    else if (key === 'flag') { var i = cur.flags.indexOf(value); if (i >= 0) cur.flags.splice(i, 1); else cur.flags.push(value); }
+    else cur[key] = value;
+    state.data.checkins = dget('checkins').filter(function (r) { return r.date !== date; }).concat([cur]);
+    enqueue('checkin', { checkin: cur });
+  }
+
+  function checkinCard(date) {
+    var cur = checkinOn(dget('checkins'), date) || { energy: 0, mood: 0, stress: 0, sore: 0, flags: [], extra: {} };
+    var filled = !!(cur.energy || cur.mood || cur.stress || cur.sore || (cur.flags || []).length || Object.keys(cur.extra || {}).length);
+    var extraNames = String((state.data.settings || {}).checkinExtra || '').split(',').filter(function (x) { return x; });
+    function scaleRow(label, low, high, value, onPick) {
+      return h('div', { class: 'scale' },
+        h('span', { class: 'sl' }, label),
+        h('div', { class: 'sbtns' }, [1, 2, 3, 4, 5].map(function (n) {
+          return h('button', { class: 'sb' + (value === n ? ' on' : ''), type: 'button', 'aria-pressed': String(value === n), 'aria-label': label + ' ' + n, onclick: function () { onPick(value === n ? 0 : n); } }, String(n));
+        })),
+        h('span', { class: 'muted se' }, low + '→' + high));
+    }
+    var open = state.checkinOpen && state.checkinOpen.date === date ? state.checkinOpen.open : !filled;
+    var box = h('details', { class: 'card', open: open },
+      h('summary', null, '今日自評' + (filled ? '（已記）' : '（約 10 秒）')),
+      CHECKIN_METRICS.map(function (m) { return scaleRow(m.label, m.low, m.high, cur[m.key] || 0, function (v) { setCheckin(date, m.key, v); }); }),
+      extraNames.map(function (nm) { return scaleRow(nm, '低', '高', (cur.extra || {})[nm] || 0, function (v) { setCheckin(date, '', v, nm); }); }),
+      h('div', { class: 'flags' }, CHECKIN_FLAGS.map(function (f) {
+        var on = (cur.flags || []).indexOf(f.name) >= 0;
+        return h('button', { class: 'fl' + (on ? (f.good ? ' on' : ' bad') : ''), type: 'button', 'aria-pressed': String(on), onclick: function () { setCheckin(date, 'flag', f.name); } }, f.name);
+      })),
+      h('div', { class: 'muted' }, '只是記錄，不影響完成率。累積幾週後在「健康」頁看和睡眠、運動的關係。'));
+    box.addEventListener('toggle', function () { state.checkinOpen = { date: date, open: box.open }; });
+    return box;
+  }
+
+  // 今天的狀態: 精神好／普通／疲勞 (shared with the 訓練 tab). 疲勞 = 低能量日.
+  function dayStateBar(date) {
+    var st = trainStateOn(date), future = date > today(), settings = state.data.settings || {};
+    var coreN = coreIdsFrom(settings).length;
+    return h('div', { class: 'card' },
+      h('div', { class: 'muted' }, '今天的狀態'),
+      h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
+        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s);
+      })),
+      h('div', { class: 'muted' }, st === '疲勞'
+        ? (coreN ? '低能量日：只有標「核心」的任務還要做，其他今天放過，不影響連續天數。' : '低能量日：還沒有設定核心任務。到「任務」頁編輯任務，勾選「低能量日仍要做」。')
+        : '選「疲勞」＝低能量日，只做核心任務；訓練頁也會給輕鬆版。'));
+  }
+
+  // ---- 力量紀錄 (in the 訓練 tab) ----
+
+  function strengthDayOn(date) {
+    var moves = dget('strengthMoves'), byName = {}, rows = dget('strength');
+    moves.forEach(function (m) { byName[m.name] = m; });
+    var mine = rows.filter(function (r) { return r.date === date && byName[r.move]; });
+    if (mine.length) return byName[mine[0].move].day;
+    return nextStrengthDay(moves, rows.filter(function (r) { return r.date < date; }));
+  }
+
+  function strengthRow(m, date, past) {
+    var cur = dget('strength').filter(function (r) { return r.date === date && r.move === m.name; })[0];
+    var adv = strengthAdvice(m, past), next = cur ? strengthAdvice(m, past.concat([cur])) : adv;
+    return h('div', { class: 'card item train' + (cur ? ' done' : '') },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' },
+          h('div', { class: 'name' }, m.name),
+          h('div', { class: 'muted' }, '目標 ' + adv.target + (adv.last ? '・上次 ' + repsText(adv.last.reps) + (adv.last.weight ? ' @' + adv.last.weight + ' kg' : '') : '')),
+          cur ? h('div', null, h('span', { class: 'chip on' }, '✓ ' + repsText(cur.reps) + (cur.weight ? ' @' + cur.weight + ' kg' : ''))) : null),
+        h('button', { class: 'btn small' + (cur ? '' : ' primary'), onclick: function () { state.modal = { type: 'strength', task: { id: m.id }, move: m, date: date }; renderModal(); } }, cur ? '編輯' : '記錄')),
+      h('div', { class: 'variant' + (next.ready ? ' go' : '') }, (cur ? '下次：' : '') + next.text));
+  }
+
+  function strengthModal(m) {
+    var mv = m.move, date = m.date;
+    var cur = dget('strength').filter(function (r) { return r.date === date && r.move === mv.name; })[0];
+    var past = dget('strength').filter(function (r) { return r.date < date; });
+    var adv = strengthAdvice(mv, past);
+    var w0 = cur ? cur.weight : adv.last ? adv.last.weight : '';
+    var form = h('form', { onsubmit: function (ev) {
+      ev.preventDefault();
+      var reps = [];
+      for (var i = 0; i < mv.sets; i++) { var n = parseInt(form.elements['r' + i].value, 10); if (n > 0) reps.push(n); }
+      if (!reps.length) { toast('至少填一組的次數'); return; }
+      var entry = { date: date, move: mv.name, reps: reps, weight: mv.weighted ? (parseFloat(form.elements.weight.value) || 0) : 0, note: form.elements.note.value.trim() };
+      saveStrengthLocal(entry);
+      closeModal();
+    } },
+      h('p', { class: 'muted' }, dateTitle(date) + '・目標 ' + adv.target),
+      h('div', { class: 'sets' }, (function () {
+        var list = [];
+        for (var i = 0; i < mv.sets; i++) list.push(h('label', { class: 'setb' }, '第 ' + (i + 1) + ' 組',
+          h('input', { type: 'number', name: 'r' + i, min: '0', max: '999', inputmode: 'numeric', placeholder: String(mv.repsHigh), value: cur && cur.reps[i] ? cur.reps[i] : '' })));
+        return list;
+      }())),
+      mv.weighted ? h('label', { class: 'f', for: 's-weight' }, '重量（公斤，同一個動作每組用同樣重量）') : null,
+      mv.weighted ? h('input', { type: 'number', id: 's-weight', name: 'weight', min: '0', max: '500', step: '0.5', inputmode: 'decimal', value: w0 || '' }) : h('input', { type: 'hidden', name: 'weight', value: '' }),
+      h('label', { class: 'f', for: 's-note' }, '備註（選填，例如手腕痠、換了彈力帶）'),
+      h('input', { type: 'text', id: 's-note', name: 'note', maxlength: '100', value: cur ? cur.note : '' }),
+      h('div', { class: 'variant' + (adv.ready ? ' go' : ''), style: 'margin-top:10px' }, adv.text),
+      h('div', { class: 'row', style: 'margin-top:14px' },
+        h('button', { class: 'btn primary grow', type: 'submit' }, cur ? '更新' : '儲存'),
+        cur ? h('button', { class: 'btn danger', type: 'button', onclick: function () { closeModal(); saveStrengthLocal({ date: date, move: mv.name, reps: [], weight: 0, note: '' }); } }, '清除') : null,
+        h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+    return modalShell(mv.name, form);
+  }
+
+  function saveStrengthLocal(entry) {
+    state.data.strength = dget('strength').filter(function (r) { return !(r.date === entry.date && r.move === entry.move); });
+    if (entry.reps.length) state.data.strength.push(entry);
+    enqueue('strength', { entry: entry });
+    // A logged session is also the day's 重量訓練 check-in.
+    if (entry.reps.length) tickByName(/重量訓練/, entry.date, strengthDayOn(entry.date) + ' 日');
+  }
+
+  // ---- 三大目標與月回顧 (in the 月/季 tab) ----
+
+  function goalCard() {
+    var c = ctx(), prog = goalProgress(c.tasks, dget('goalMap'), c.idx, c.leave, today());
+    var rows = prog.map(function (g) {
+      if (!g.tasks) return h('div', { class: 'muted', style: 'margin:8px 0' }, g.icon + ' ' + g.name + '：還沒有對應的任務');
+      var arrow = g.delta === null ? '' : g.delta > 0.03 ? '　▲' + Math.round(g.delta * 100) : g.delta < -0.03 ? '　▼' + Math.round(-g.delta * 100) : '　＝';
+      return bar(g.icon + ' ' + g.name + '（' + g.tasks + ' 項任務）', pct(g.rate) + arrow, g.rate || 0);
+    });
+    return [h('h2', null, '三大目標・近 7 天'),
+      h('div', { class: 'card' }, rows, h('div', { class: 'muted' }, '完成度＝對應任務近 7 天的完成比例，▲▼ 是和前 7 天比。哪些任務算哪個目標，到試算表「目標對應」調整。'))];
+  }
+
+  function reviewCard() {
+    var t0 = today(), d = state.data;
+    var rev = monthReview({ tasks: d.tasks, logs: d.logs, leave: d.leave, exempts: dget('exempts'), extras: extras(), health: dget('health'), checkins: dget('checkins'), strength: dget('strength') }, monthKey(t0), t0);
+    var c = rev.cur, p = rev.prev;
+    function row(label, a, b) { return h('tr', null, h('td', null, label), h('td', null, a), h('td', null, b)); }
+    function clock(m) { return m === null || m === undefined || isNaN(m) ? '—' : fmtClock_(m); }
+    function whole(x) { return x === null || x === undefined || isNaN(x) ? '—' : String(Math.round(x)); }
+    function weight(r) { return r.weightFirst === null || r.weightFirst === undefined ? '—' : r.weightFirst + ' → ' + r.weightLast; }
+    function fat(r) { return r.fatFirst === null || r.fatFirst === undefined ? '—' : r.fatFirst + ' → ' + r.fatLast; }
+    return [h('h2', null, '月回顧（本月到今天 vs 上個月）'),
+      h('div', { class: 'card scroll' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, ''), h('th', null, c.month.slice(5) + ' 月'), h('th', null, p.month.slice(5) + ' 月'))),
+        h('tbody', null,
+          row('必做完成率', pct(c.rate), pct(p.rate)),
+          row('達標天數', String(c.qualified || 0), String(p.qualified || 0)),
+          row('平均睡眠（小時）', hoursText(c.sleepMin), hoursText(p.sleepMin)),
+          row('平均入睡', clock(c.bed), clock(p.bed)),
+          row('平均步數', whole(c.steps), whole(p.steps)),
+          row('靜止心率', whole(c.rhr), whole(p.rhr)),
+          row('體重 kg', weight(c), weight(p)),
+          row('體脂 %', fat(c), fat(p)),
+          row('重量訓練（天）', String(c.strengthDays || 0), String(p.strengthDays || 0)),
+          row('Zone 2（分鐘）', String(c.zone2Min || 0), String(p.zone2Min || 0)),
+          row('自評精力', num1(c.energy), num1(p.energy)),
+          row('自評壓力', num1(c.stress), num1(p.stress)))),
+        h('div', { class: 'row', style: 'margin-top:10px' },
+          h('button', { class: 'btn small', onclick: function () {
+            var text = monthReviewText(rev);
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { toast('已複製，貼給 Claude 就能做完整回顧'); }, function () { toast('無法複製'); });
+            else toast('這個瀏覽器不能複製');
+          } }, '複製成文字'),
+          h('span', { class: 'muted grow' }, '貼給 Claude，會幫你做完整的月回顧與下月重點。')))];
+  }
+
+  // ---- 更多 (the pages that used to be separate tabs) ----
+
+  var SUB_PAGES = ['game', 'tasks', 'plan', 'settings'];
+  function navTabOf(tab) { return SUB_PAGES.indexOf(tab) >= 0 ? 'more' : tab; }
+
+  function goTab(tab) {
+    state.tab = tab; state.editing = null; state.modal = null;
+    if (tab === 'ledger') loadLedger();
+    render(); window.scrollTo(0, 0);
+  }
+
+  function renderMore() {
+    var items = [
+      ['game', '🏅', '成就', '等級、星幣、成就、免責券'],
+      ['tasks', '🗂', '任務', '新增、修改、排序、設定核心任務'],
+      ['plan', '📅', '月/季', '三大目標、月回顧、月/季規劃'],
+      ['settings', '⚙️', '設定', '連線、動畫、自評額外題目']
+    ];
+    var nodes = [h('h1', null, '更多')];
+    items.forEach(function (it) {
+      nodes.push(h('button', { class: 'card more', onclick: function () { goTab(it[0]); } },
+        h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, it[1]), it[2]), h('div', { class: 'muted' }, it[3])));
+    });
+    nodes.push(h('p', { class: 'muted' }, '記帳、餐費、日記、待辦提醒和預算都在「記錄」。'));
+    return nodes;
+  }
+
+  // Sub pages get a way back to 更多.
+  function withBack(tab, nodes) {
+    if (SUB_PAGES.indexOf(tab) < 0 || !state.cfg) return nodes;
+    return [h('button', { class: 'btn small', onclick: function () { goTab('more'); } }, '‹ 更多')].concat(nodes);
+  }
+
+  // ---- 記錄: 記帳, 餐費, 日記 ----
+
+  var LEDGER_CHIPS = [['🥤', '含糖'], ['🍟', '炸物'], ['🍷', '酒'], ['🍩', '甜點'], ['🥗', '健康餐'], ['🥬', '足量蔬菜'], ['🍎', '水果'], ['🏋', '運動']];
+
+  function uuid() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random(); }
+
+  function ledgerKindOf(t) {
+    if (!t.active) return '';
+    if (/記餐費|餐費/.test(t.name)) return 'meal';
+    if (/記帳/.test(t.name)) return 'expense';
+    if (/日記/.test(t.name)) return 'diary';
+    return '';
+  }
+
+  function ledgerState() {
+    if (!state.ledger) {
+      state.ledger = {
+        pane: 'expense', date: today(), busy: false, preview: null, cid: {},
+        draft: { type: '支出', category: '', sub: '', desc: '', amount: '', method: LS.get('habit.ledger.method', '刷卡'), note: '',
+          meal: defaultMeal(new Date().getHours()), content: '', mamount: '', diary: '' }
+      };
+    }
+    return state.ledger;
+  }
+
+  function openLedger(pane, date) {
+    var L0 = ledgerState();
+    L0.pane = pane; L0.date = date || today(); L0.preview = null;
+    goTab('ledger');
+  }
+
+  function loadLedger() {
+    if (!state.cfg || state.ledgerLoading) return;
+    state.ledgerLoading = true;
+    api('ledgerData').then(function (res) {
+      state.data.ledger = res.ledger;
+      LS.set('habit.data', state.data);
+    }).catch(function (e) {
+      if (!e.network) state.data.ledger = { enabled: false, error: e.message };
+    }).then(function () { state.ledgerLoading = false; if (state.tab === 'ledger') render(); });
+  }
+
+  // Tick the habit task that matches (記帳, 記餐費, 日記) once its entry is saved.
+  function tickByName(re, date, note) {
+    var t = state.data.tasks.filter(function (x) { return x.active && re.test(x.name); })[0];
+    if (t && !isDone(t, date, ctx().idx)) checkTask(t, date, '標準', note || '');
+  }
+
+  function ledgerSend(kind, action, payload, onOk) {
+    var L0 = ledgerState();
+    L0.busy = true; render();
+    api(action, Object.assign({ clientId: L0.cid[kind] || (L0.cid[kind] = uuid()) }, payload)).then(function (res) {
+      L0.cid[kind] = null;
+      onOk(res.result);
+    }).catch(function (e) { toast(e.network ? '需要網路才能記錄，內容還在，連上網再按一次' : e.message); })
+      .then(function () { L0.busy = false; render(); });
+  }
+
+  function dayChips(L0) {
+    var t0 = today(), picks = [['前天', addDays(t0, -2)], ['昨天', addDays(t0, -1)], ['今天', t0]];
+    return h('div', { class: 'row', style: 'flex-wrap:wrap' },
+      picks.map(function (p) { return h('button', { class: 'btn small' + (L0.date === p[1] ? ' primary' : ''), type: 'button', onclick: function () { L0.date = p[1]; L0.preview = null; render(); } }, p[0]); }),
+      h('input', { type: 'date', class: 'dateinp', value: L0.date, max: t0, 'aria-label': '日期', onchange: function (ev) { if (ev.target.value) { L0.date = ev.target.value; L0.preview = null; render(); } } }));
+  }
+
+  function rememberExpense(e) {
+    var list = LS.get('habit.ledger.recent', []).filter(function (r) { return !(r.desc === e.desc && r.category === e.category); });
+    list.unshift({ type: e.type, category: e.category, sub: e.sub, desc: e.desc, amount: e.amount, method: e.method });
+    LS.set('habit.ledger.recent', list.slice(0, 12));
+    LS.set('habit.ledger.method', e.method);
+  }
+
+  function expenseForm(L0, lg) {
+    var d = L0.draft, cats = lg.categories[d.type === '收入' ? 'income' : 'expense'];
+    if (cats.big.indexOf(d.category) < 0) d.category = cats.big[0];
+    var subs = (cats.subs && cats.subs[d.category]) || [];
+    function bind(key) { return function (ev) { d[key] = ev.target.value; }; }
+    function seg(key, values) {
+      return h('div', { class: 'seg' }, values.map(function (v) {
+        return h('button', { class: 'btn' + (d[key] === v ? ' on' : ''), type: 'button', 'aria-pressed': String(d[key] === v), onclick: function () { d[key] = v; if (key === 'type') d.category = ''; render(); } }, v);
+      }));
+    }
+    var recent = LS.get('habit.ledger.recent', []).filter(function (r) { return r.type === d.type; }).slice(0, 6);
+    var form = h('form', { class: 'card', onsubmit: function (ev) {
+      ev.preventDefault();
+      var entry = { date: L0.date, type: d.type, category: d.category, sub: d.sub.trim(), desc: d.desc.trim(), amount: d.amount, method: d.method, note: d.note.trim() };
+      try { expenseRow(entry); } catch (e) { toast(e.message); return; }
+      ledgerSend('expense', 'ledgerExpense', { entry: entry }, function (r) {
+        lg.expenses = (lg.expenses || []).concat([{ row: r.row, date: entry.date, type: entry.type, category: entry.category, sub: entry.sub, desc: entry.desc, amount: parseAmount(entry.amount), method: entry.method, note: entry.note }]);
+        rememberExpense(entry);
+        d.desc = ''; d.amount = ''; d.note = ''; d.sub = '';
+        tickByName(/記帳/, entry.date, '');
+        toast('已記下：' + (entry.desc || entry.category) + ' ' + parseAmount(entry.amount));
+      });
+    } },
+      recent.length ? h('div', null, h('div', { class: 'muted' }, '常用（點一下帶入）'),
+        h('div', { class: 'flags' }, recent.map(function (r) {
+          return h('button', { class: 'fl', type: 'button', onclick: function () { Object.assign(d, { type: r.type, category: r.category, sub: r.sub || '', desc: r.desc, amount: r.amount, method: r.method }); render(); } }, (r.desc || r.category) + ' ' + r.amount);
+        }))) : null,
+      seg('type', ['支出', '收入']),
+      h('label', { class: 'f', for: 'x-cat' }, '大類'),
+      h('select', { id: 'x-cat', name: 'category', onchange: function (ev) { d.category = ev.target.value; d.sub = ''; render(); } }, cats.big.map(function (o) { return h('option', { value: o, selected: o === d.category }, o); })),
+      h('label', { class: 'f', for: 'x-sub' }, '子類（可自己輸入）'),
+      h('input', { type: 'text', id: 'x-sub', list: 'x-subs', autocomplete: 'off', value: d.sub, oninput: bind('sub') }),
+      h('datalist', { id: 'x-subs' }, subs.map(function (s) { return h('option', { value: s }); })),
+      h('label', { class: 'f', for: 'x-desc' }, '項目描述'),
+      h('input', { type: 'text', id: 'x-desc', autocomplete: 'off', value: d.desc, oninput: bind('desc') }),
+      h('label', { class: 'f', for: 'x-amt' }, '金額'),
+      h('input', { type: 'text', id: 'x-amt', inputmode: 'decimal', autocomplete: 'off', value: d.amount, oninput: bind('amount') }),
+      seg('method', ['刷卡', '現金']),
+      h('label', { class: 'f', for: 'x-note' }, '備註'),
+      h('input', { type: 'text', id: 'x-note', autocomplete: 'off', value: d.note, oninput: bind('note') }),
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        h('button', { class: 'btn primary grow', type: 'submit', disabled: L0.busy }, L0.busy ? '寫入中…' : '記下這筆'),
+        h('button', { class: 'btn', type: 'button', disabled: L0.busy, onclick: function () {
+          ledgerSend('nospend', 'ledgerNoSpend', { date: L0.date }, function () { tickByName(/記帳/, L0.date, '今天沒花錢'); toast('好的，記為「沒花錢」'); });
+        } }, '沒花錢')));
+    return form;
+  }
+
+  function mealForm(L0, lg) {
+    var d = L0.draft;
+    var form = h('form', { class: 'card', onsubmit: function (ev) {
+      ev.preventDefault();
+      var entry = { date: L0.date, meal: d.meal, content: d.content, amount: d.mamount };
+      try { mergeMeal(null, entry); } catch (e) { toast(e.message); return; }
+      ledgerSend('meal', 'ledgerMeal', { entry: entry }, function () {
+        var rows = lg.meals || [], row = rows.filter(function (r) { return r.date === entry.date; })[0];
+        if (!row) { row = { date: entry.date, meals: {} }; MEAL_NAMES.forEach(function (m) { row.meals[m] = { content: '', amount: 0 }; }); rows = rows.concat([row]); }
+        var cur = row.meals[entry.meal];
+        cur.content = cur.content && entry.content.trim() ? cur.content + ' ' + entry.content.trim() : (cur.content || entry.content.trim());
+        cur.amount += parseMealAmount(entry.amount);
+        lg.meals = rows;
+        d.content = ''; d.mamount = '';
+        tickByName(/餐費/, entry.date, '');
+        toast('已記下這餐');
+      });
+    } },
+      h('div', { class: 'seg' }, MEAL_NAMES.map(function (m) {
+        return h('button', { class: 'btn' + (d.meal === m ? ' on' : ''), type: 'button', 'aria-pressed': String(d.meal === m), onclick: function () { d.meal = m; render(); } }, m);
+      })),
+      h('label', { class: 'f', for: 'm-content' }, '內容（下面的符號會加進內容，分數公式靠它計算）'),
+      h('input', { type: 'text', id: 'm-content', autocomplete: 'off', value: d.content, oninput: function (ev) { d.content = ev.target.value; } }),
+      h('div', { class: 'flags' }, LEDGER_CHIPS.map(function (c) {
+        return h('button', { class: 'fl', type: 'button', onclick: function () { d.content = d.content ? d.content.replace(/\s+$/, '') + ' ' + c[0] : c[0]; render(); } }, c[0] + c[1]);
+      })),
+      h('label', { class: 'f', for: 'm-amt' }, '金額（不分現金／刷卡，可留空）'),
+      h('input', { type: 'text', id: 'm-amt', inputmode: 'decimal', autocomplete: 'off', value: d.mamount, oninput: function (ev) { d.mamount = ev.target.value; } }),
+      h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:12px;width:100%', disabled: L0.busy }, L0.busy ? '寫入中…' : '記下這餐'));
+    return form;
+  }
+
+  function diaryForm(L0, lg) {
+    var d = L0.draft;
+    if (!lg.diary) return h('div', { class: 'card muted' }, '日記資料庫還沒設定：到 Apps Script 執行 setupLedger()。');
+    var preview = L0.preview && L0.preview.date === L0.date ? h('div', { class: 'howto', style: 'white-space:pre-wrap' }, L0.preview.text || '（這天還沒有內容）') : null;
+    return h('form', { class: 'card', onsubmit: function (ev) {
+      ev.preventDefault();
+      if (!d.diary.trim()) { toast('請先寫點內容'); return; }
+      ledgerSend('diary', 'ledgerDiary', { date: L0.date, text: d.diary }, function (r) {
+        d.diary = ''; L0.preview = null;
+        tickByName(/日記/, L0.date, '');
+        toast('已接在 ' + r.cell + ' 後面');
+      });
+    } },
+      h('label', { class: 'f', for: 'd-text' }, '今天發生了什麼？（會接在 Year at a Glance 當天格子後面）'),
+      h('textarea', { id: 'd-text', rows: '8', oninput: function (ev) { d.diary = ev.target.value; } }, d.diary),
+      preview,
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        h('button', { class: 'btn primary grow', type: 'submit', disabled: L0.busy }, L0.busy ? '寫入中…' : '寫進日記'),
+        h('button', { class: 'btn', type: 'button', onclick: function () {
+          api('ledgerDiaryRead', { date: L0.date }).then(function (res) { L0.preview = { date: L0.date, text: res.result.text }; render(); })
+            .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+        } }, '看當天已寫的')));
+  }
+
+  function ledgerDayList(L0, lg) {
+    var date = L0.date, ex = (lg.expenses || []).filter(function (e) { return e.date === date; });
+    var meal = (lg.meals || []).filter(function (r) { return r.date === date; })[0];
+    var nodes = [h('h2', null, dateTitle(date) + ' 已記')];
+    var spent = 0;
+    ex.forEach(function (e) { if (e.type === '支出') spent += e.amount; });
+    if (!ex.length && !meal) nodes.push(h('p', { class: 'muted' }, '這天還沒有記錄。已經貼回 Excel 並清空的，不會再出現在這裡。'));
+    if (ex.length) {
+      nodes.push(h('div', { class: 'card' },
+        ex.map(function (e) {
+          return h('div', { class: 'row', style: 'margin:6px 0' }, h('div', { class: 'grow' }, (e.type === '收入' ? '＋ ' : '') + (e.desc || e.category), h('div', { class: 'muted' }, e.category + (e.sub ? '・' + e.sub : '') + '・' + e.method)), h('b', null, String(e.amount)));
+        }),
+        h('div', { class: 'muted' }, '支出合計 ' + spent)));
+    }
+    if (meal) {
+      nodes.push(h('div', { class: 'card' }, MEAL_NAMES.filter(function (m) { return meal.meals[m].content || meal.meals[m].amount; }).map(function (m) {
+        var x = meal.meals[m];
+        return h('div', { class: 'row', style: 'margin:6px 0' }, h('b', null, m), h('div', { class: 'grow' }, x.content || '—'), x.amount ? h('span', null, String(x.amount)) : null);
+      })));
+    }
+    return nodes;
+  }
+
+  function renderLedger() {
+    var L0 = ledgerState(), lg = state.data.ledger, nodes = [h('h1', null, '記錄')];
+    if (!lg) {
+      nodes.push(h('p', { class: 'muted' }, '載入中…'));
+      if (!state.ledgerTried) { state.ledgerTried = true; loadLedger(); }
+      return nodes;
+    }
+    if (!lg.enabled) {
+      nodes.push(h('div', { class: 'card' }, h('div', { class: 'name' }, '還沒設定記帳資料庫'),
+        h('div', { class: 'muted' }, (lg.error ? lg.error + '。' : '') + '到 Apps Script 編輯器執行 setupLedger（只要一次），再回來按「立即同步」。'),
+        h('button', { class: 'btn small', style: 'margin-top:8px', onclick: function () { state.ledgerTried = false; state.data.ledger = null; goTab('ledger'); } }, '重新檢查')));
+      return nodes;
+    }
+    nodes.push(h('div', { class: 'seg' }, [['expense', '記帳'], ['meal', '餐費'], ['diary', '日記'], ['todo', '待辦'], ['budget', '預算']].map(function (p) {
+      return h('button', { class: 'btn' + (L0.pane === p[0] ? ' on' : ''), 'aria-pressed': String(L0.pane === p[0]), onclick: function () { L0.pane = p[0]; render(); } }, p[1]);
+    })));
+    if (L0.pane === 'todo' || L0.pane === 'budget') {
+      (L0.pane === 'todo' ? todoPane(L0) : budgetPane()).forEach(function (n) { nodes.push(n); });
+      return nodes;
+    }
+    nodes.push(dayChips(L0));
+    nodes.push(L0.pane === 'expense' ? expenseForm(L0, lg) : L0.pane === 'meal' ? mealForm(L0, lg) : diaryForm(L0, lg));
+    if (L0.pane !== 'diary') ledgerDayList(L0, lg).forEach(function (n) { nodes.push(n); });
+    return nodes;
+  }
+
+  // ---- 待辦提醒 (the reminders are still sent by the old project's trigger from the same sheet) ----
+
+  function loadTodos() {
+    if (!state.cfg || state.todosLoading) return;
+    state.todosLoading = true; state.todosError = '';
+    api('todoList').then(function (res) { state.todos = res.todos; })
+      .catch(function (e) { state.todosError = e.network ? '需要網路才能看待辦' : e.message; })
+      .then(function () { state.todosLoading = false; if (state.tab === 'ledger') render(); });
+  }
+
+  function todoDo(action, payload, okMsg, local) {
+    api(action, payload).then(function () { if (local) local(); toast(okMsg); if (state.tab === 'ledger') render(); })
+      .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+  }
+
+  function todoDraft(L0) {
+    if (!L0.todoDraft) L0.todoDraft = { text: '', time: '09:00', repeat: 'once', date: today(), weekdays: [], monthDay: '' };
+    return L0.todoDraft;
+  }
+
+  function todoPane(L0) {
+    var nodes = [];
+    if (!state.todos) {
+      if (!state.todosLoading && !state.todosError) loadTodos();
+      nodes.push(h('p', { class: 'muted' }, state.todosError || '載入中…'));
+      if (state.todosError) nodes.push(h('button', { class: 'btn small', onclick: function () { state.todosError = ''; render(); } }, '重試'));
+      return nodes;
+    }
+    nodes.push(h('h2', null, '提醒清單'));
+    if (!state.todos.length) nodes.push(h('p', { class: 'muted' }, '還沒有自訂提醒。'));
+    state.todos.forEach(function (t) {
+      var off = !t.enabled || t.done;
+      nodes.push(h('div', { class: 'card' + (off ? ' inactive' : '') },
+        h('div', { class: 'name' }, t.text),
+        h('div', { class: 'muted' }, describeTodo(t) + (t.done ? '（已完成）' : t.enabled ? '' : '（已停用）')),
+        h('div', { class: 'row', style: 'margin-top:8px' },
+          t.done ? null : h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { done: true } }, '已完成', function () { t.done = true; }); } }, '完成'),
+          h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { enabled: !t.enabled } }, t.enabled ? '已停用' : '已啟用', function () { t.enabled = !t.enabled; }); } }, t.enabled ? '停用' : '啟用'),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'btn small danger', onclick: function () {
+            if (!confirm('刪除「' + t.text + '」？')) return;
+            todoDo('todoDelete', { id: t.id }, '已刪除', function () { state.todos = state.todos.filter(function (x) { return x.id !== t.id; }); });
+          } }, '刪除'))));
+    });
+    var d = todoDraft(L0), WD = ['日', '一', '二', '三', '四', '五', '六'];
+    nodes.push(h('h2', null, '新增提醒'));
+    var form = h('form', { class: 'card', onsubmit: function (ev) {
+      ev.preventDefault();
+      var todo = { text: d.text, time: d.time, repeat: d.repeat, date: d.date, weekdays: d.weekdays, monthDay: d.monthDay };
+      try { validateTodo(todo); } catch (e) { toast(e.message); return; }
+      api('todoSave', { todo: todo }).then(function () { d.text = ''; toast('已新增提醒'); state.todos = null; loadTodos(); })
+        .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+    } },
+      h('label', { class: 'f', for: 't-text' }, '內容（會顯示在 Telegram 通知上，請勿填金額或私密資訊）'),
+      h('input', { type: 'text', id: 't-text', autocomplete: 'off', value: d.text, oninput: function (ev) { d.text = ev.target.value; } }),
+      h('label', { class: 'f', for: 't-time' }, '時間'),
+      h('input', { type: 'time', id: 't-time', value: d.time, oninput: function (ev) { d.time = ev.target.value; } }),
+      h('label', { class: 'f', for: 't-rep' }, '重複'),
+      h('select', { id: 't-rep', onchange: function (ev) { d.repeat = ev.target.value; render(); } },
+        [['once', '一次'], ['daily', '每天'], ['weekly', '每週'], ['monthly', '每月']].map(function (o) { return h('option', { value: o[0], selected: d.repeat === o[0] }, o[1]); })),
+      d.repeat === 'once' ? h('div', null, h('label', { class: 'f', for: 't-date' }, '日期'), h('input', { type: 'date', id: 't-date', value: d.date, oninput: function (ev) { d.date = ev.target.value; } })) : null,
+      d.repeat === 'weekly' ? h('div', null, h('label', { class: 'f' }, '星期'), h('div', { class: 'flags' }, WD.map(function (w, i) {
+        var on = d.weekdays.indexOf(i) >= 0;
+        return h('button', { class: 'fl' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on), onclick: function () { if (on) d.weekdays = d.weekdays.filter(function (x) { return x !== i; }); else d.weekdays = d.weekdays.concat([i]); render(); } }, w);
+      }))) : null,
+      d.repeat === 'monthly' ? h('div', null, h('label', { class: 'f', for: 't-md' }, '每月幾號（31 號在小月會改到月底）'), h('input', { type: 'number', id: 't-md', min: '1', max: '31', inputmode: 'numeric', value: d.monthDay, oninput: function (ev) { d.monthDay = ev.target.value; } })) : null,
+      h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:12px;width:100%' }, '新增提醒'));
+    nodes.push(form);
+    return nodes;
+  }
+
+  // ---- 預算 (this month's spending against the monthly budget; the 80% / 100% alerts still come from the old project) ----
+
+  function loadBudget(force) {
+    if (!state.cfg || state.budgetLoading) return;
+    state.budgetLoading = true; state.budgetError = '';
+    api('budgetSummary', { force: !!force }).then(function (res) { state.budget = res.budget; })
+      .catch(function (e) { state.budgetError = e.network ? '需要網路才能看預算' : e.message; })
+      .then(function () { state.budgetLoading = false; if (state.tab === 'ledger') render(); });
+  }
+
+  function money(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+
+  function budgetPane() {
+    var nodes = [];
+    if (!state.budget) {
+      if (!state.budgetLoading && !state.budgetError) loadBudget(false);
+      nodes.push(h('p', { class: 'muted' }, state.budgetError || '讀取中…（第一次要幾秒）'));
+      if (state.budgetError) nodes.push(h('button', { class: 'btn small', onclick: function () { state.budgetError = ''; render(); } }, '重試'));
+      return nodes;
+    }
+    var b = state.budget;
+    nodes.push(h('h2', null, b.ym + ' 預算'));
+    (b.warnings || []).forEach(function (w) { nodes.push(h('div', { class: 'alert' }, w)); });
+    if (!b.usage.length && !(b.warnings || []).length) nodes.push(h('p', { class: 'muted' }, '目前沒有可監控的類別。'));
+    b.usage.forEach(function (u) {
+      nodes.push(h('div', { class: 'card' },
+        h('div', { class: 'row' }, h('b', { class: 'grow' }, u.cat), h('span', null, money(u.spent) + ' / ' + money(u.budget) + '　' + u.pct + '%')),
+        h('div', { class: 'bar', style: 'margin-top:6px' }, h('i', { class: u.pct >= 100 ? 'over' : u.pct >= 80 ? 'warn' : '', style: 'width:' + Math.min(u.pct, 100) + '%' })),
+        h('div', { class: 'muted' }, '預算' + u.source)));
+    });
+    nodes.push(h('div', { class: 'muted' }, (b.source && b.source.mirrored ? '鏡像更新 ' + b.source.mirrored + '，另含收件匣 ' + b.source.inboxCount + ' 筆' : '') + (b.at ? '・' + b.at + ' 讀取' : '')));
+    nodes.push(h('button', { class: 'btn small', style: 'margin-top:8px', onclick: function () { state.budget = null; loadBudget(true); render(); } }, '重新整理'));
+    return nodes;
+  }
+
+  // ---- 訓練頁: the merged plan ----
+
+  function weekLoadCard(date, start) {
+    var w = trainingWeekLoad(date, start);
+    function hm(min) { return min >= 60 ? Math.floor(min / 60) + ' 小時' + (min % 60 ? ' ' + (min % 60) + ' 分' : '') : min + ' 分'; }
+    return h('div', { class: 'card' },
+      h('div', { class: 'name' }, '這週的負擔'),
+      h('div', { class: 'muted' }, '最低版 ' + hm(w.min) + '（週一、週五的力量，加週日長 Zone 2）・標準版 ' + hm(w.std) + '・全做 ' + hm(w.std + w.opt) + (w.fixed ? '，另外固定的課和健身房 ' + hm(w.fixed) : '')),
+      h('div', { class: 'muted' }, '忙的週只做最低版就夠。選「疲勞」，卡片會給輕鬆版。'));
+  }
+
+  function homeStrengthNodes(item, date, st) {
+    var moves = dget('strengthMoves').filter(function (m) { return m.active && m.day === item.day; });
+    var logged = dget('strength').filter(function (r) { return r.date === date; });
+    var done = moves.some(function (m) { return logged.some(function (r) { return r.move === m.name; }); });
+    var variant = trainVariant(item, st), future = date > today();
+    var nodes = [h('div', { class: 'card item train' + (done ? ' done' : '') },
+      h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, item.icon), item.title),
+      h('div', null, h('span', { class: 'chip on' }, '本週重點'), h('span', { class: 'chip' }, item.time), h('span', { class: 'muted' }, '約 ' + item.minutes + ' 分'),
+        done ? h('span', { class: 'chip on' }, '✓ 已記錄') : null),
+      variant ? h('div', { class: 'variant' }, h('b', null, variant.label + '：'), variant.text) : null,
+      h('ul', null, item.detail.map(function (x) { return h('li', null, x); })))];
+    if (!moves.length) {
+      nodes.push(h('div', { class: 'card muted' }, '還沒有動作清單。到 Apps Script 執行 migrateV10，或在試算表「力量動作」填寫。'));
+      return nodes;
+    }
+    if (future) return nodes;
+    var past = dget('strength').filter(function (r) { return r.date < date; });
+    moves.forEach(function (m) { nodes.push(strengthRow(m, date, past)); });
+    return nodes;
+  }
+
+  // Any day can take one more strength session: a collapsed card with the A / B switch.
+  function extraStrengthCard(date) {
+    state.strengthDay = state.strengthDay || {};
+    var moves = dget('strengthMoves').filter(function (m) { return m.active; });
+    if (!moves.length) return null;
+    var day = state.strengthDay[date] || strengthDayOn(date), past = dget('strength').filter(function (r) { return r.date < date; });
+    var box = h('details', { class: 'card', open: !!state.extraStrengthOpen },
+      h('summary', null, '多練一次力量（選填）'),
+      h('div', { class: 'seg' }, ['A', 'B'].map(function (d) {
+        return h('button', { class: 'btn' + (day === d ? ' on' : ''), type: 'button', 'aria-pressed': String(day === d), onclick: function () { state.strengthDay[date] = d; state.extraStrengthOpen = true; render(); } }, d + ' 日');
+      })),
+      moves.filter(function (m) { return m.day === day; }).map(function (m) { return strengthRow(m, date, past); }));
+    box.addEventListener('toggle', function () { state.extraStrengthOpen = box.open; });
+    return box;
+  }
+
+  function trainNodes(item, date, st) {
+    return item.kind === 'strength-home' ? homeStrengthNodes(item, date, st) : [trainCard(item, date, st)];
   }
 
   // ---- 成就 tab ----
@@ -886,8 +1605,14 @@
       tierUp: isAccumFreq(freq) ? '' : f.tierUp.value, tierDown: isAccumFreq(freq) ? '' : f.tierDown.value,
       options: isAccumFreq(freq) ? '' : f.options.value
     };
+    var coreNow = coreIdsFrom(state.data.settings), wantCore = !!(original.id && f.core && f.core.checked), isCore = coreNow.indexOf(original.id) >= 0;
     state.busy = true; render();
-    api('saveTask', { task: task }).then(function () { state.editing = null; toast('已儲存'); }).catch(function (e) { toast(e.network ? '需要網路才能修改任務' : e.message); })
+    api('saveTask', { task: task }).then(function () {
+      if (original.id && wantCore !== isCore) {
+        var next = wantCore ? coreNow.concat([original.id]) : coreNow.filter(function (x) { return x !== original.id; });
+        return api('setSetting', { key: 'coreTasks', value: next.join(',') });
+      }
+    }).then(function () { state.editing = null; toast('已儲存'); }).catch(function (e) { toast(e.network ? '需要網路才能修改任務' : e.message); })
       .then(function () { state.busy = false; return refresh(); });
   }
 
@@ -929,6 +1654,7 @@
         h('p', { class: 'muted' }, '選項和進階／最低二選一。')),
       h('label', { class: 'f', for: 'f-link' }, '連結（選填，https://）'),
       h('input', { type: 'url', id: 'f-link', name: 'link', value: t.link }),
+      t.id ? h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'core', checked: coreIdsFrom(state.data.settings).indexOf(t.id) >= 0 }), ' 低能量日仍要做（核心任務）') : null,
       h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'remind', checked: t.remind }), ' 用 Telegram 提醒（只提醒必做）'),
       h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'active', checked: t.active }), ' 啟用（取消勾選＝暫停）'),
       h('div', { class: 'row', style: 'margin-top:12px' },
@@ -1041,6 +1767,8 @@
         h('button', { class: 'btn' + (mode === 'quarter' ? ' on' : ''), onclick: function () { state.planMode = 'quarter'; render(); } }, '本季')),
       h('p', { class: 'muted' }, range.start + ' ～ ' + range.end)
     ];
+    goalCard().forEach(function (n) { nodes.push(n); });
+    if (mode === 'month') reviewCard().forEach(function (n) { nodes.push(n); });
     var rates = dimensionRates(c.tasks, range.start, range.end, t0, c.idx, c.leave);
     nodes.push(h('h2', null, '四維度完成率（必做的固定任務）'));
     var any = false;
@@ -1103,6 +1831,15 @@
       nodes.push(h('h2', null, '回饋'));
       nodes.push(h('div', { class: 'card' }, sw('anim', '完成動畫', '不受系統「減少動態效果」影響'), sw('vibrate', '震動'), sw('sound', '提示音')));
     }
+    if (state.cfg && state.data) {
+      var extraIn = h('input', { type: 'text', id: 's-extra', value: (state.data.settings || {}).checkinExtra || '', maxlength: '40', placeholder: '例如：晨間狀態,專注（用逗號分隔，最多 4 個）' });
+      nodes.push(h('h2', null, '每日自評'));
+      nodes.push(h('div', { class: 'card' },
+        h('label', { class: 'f', for: 's-extra' }, '額外的 1～5 分題目（選填，只有你看得到）'), extraIn,
+        h('button', { class: 'btn small', style: 'margin-top:8px', onclick: function () {
+          api('setSetting', { key: 'checkinExtra', value: extraIn.value }).then(refresh).catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+        } }, '儲存')));
+    }
     nodes.push(h('p', { class: 'muted' }, '程式版本：' + VERSION));
     if (state.cfg) {
       nodes.push(h('p', { class: 'muted' }, '尚未送出的打卡：' + state.queue.length + ' 筆'));
@@ -1124,7 +1861,7 @@
     var tab = state.cfg ? state.tab : 'settings';
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
-    else nodes = tab === 'today' ? renderToday() : tab === 'train' ? renderTrain() : tab === 'game' ? renderGame() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings();
+    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
     var focusId = document.activeElement && document.activeElement.id;
     var keepY = window.scrollY;
     view.textContent = '';
@@ -1132,7 +1869,7 @@
     if (focusId && !state.modal) { var again = document.getElementById(focusId); if (again) again.focus(); }
     window.scrollTo(0, keepY);
     Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) {
-      b.classList.toggle('on', b.getAttribute('data-tab') === tab);
+      b.classList.toggle('on', b.getAttribute('data-tab') === navTabOf(tab));
       b.disabled = !state.cfg;
     });
     renderModal();
@@ -1140,7 +1877,7 @@
   }
 
   Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) {
-    b.addEventListener('click', function () { state.tab = b.getAttribute('data-tab'); state.editing = null; state.modal = null; render(); window.scrollTo(0, 0); });
+    b.addEventListener('click', function () { goTab(b.getAttribute('data-tab')); });
   });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.modal) closeModal(); });
   window.addEventListener('online', refresh);

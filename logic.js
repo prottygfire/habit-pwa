@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js and shared/game.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js and todos.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -104,9 +104,13 @@ function periodRange(freq, s) {
 
 // logs -> lookup. 'date|id' = checked, 'm|date|id' = minutes, 't|…' = tier, 'n|…' = note. leave -> lookup set.
 // exempts: [{date, taskId}] days on which a 免責券 waived that task; they are looked up as 'x|date|id'.
-function indexLogs(logs, exempts) {
+// extras: {low: [dates marked 低能量日], core: [task ids that still count on a low-energy day]}; looked up as 'low|date' and 'core|id'.
+function indexLogs(logs, exempts, extras) {
   var idx = {};
   for (var x = 0; x < (exempts || []).length; x++) idx['x|' + exempts[x].date + '|' + exempts[x].taskId] = true;
+  var ex = extras || {}, j;
+  for (j = 0; j < (ex.low || []).length; j++) idx['low|' + ex.low[j]] = true;
+  for (j = 0; j < (ex.core || []).length; j++) idx['core|' + ex.core[j]] = true;
   for (var i = 0; i < logs.length; i++) {
     var l = logs[i], k = l.date + '|' + l.taskId;
     idx[k] = true;
@@ -126,6 +130,28 @@ function indexLeave(days) {
 function isDone(task, date, idx) { return idx[date + '|' + task.id] === true; }
 // Waived by a 免責券: the task is not required that day (no miss, no point, the streak just passes over it).
 function isExempt(task, date, idx) { return idx['x|' + date + '|' + task.id] === true; }
+
+// 低能量日 (the 疲勞 state of the day): only the 核心 tasks are still required, the other fixed 必做 tasks are let go
+// for that day. With no 核心 task chosen nothing is let go, so the feature does nothing until it is set up.
+function isLowDay(date, idx) { return idx['low|' + date] === true; }
+function hasCore_(idx) {
+  for (var k in idx) if (k.indexOf('core|') === 0) return true;
+  return false;
+}
+function isRelieved(task, date, idx) {
+  return isLowDay(date, idx) && isFixedMust_(task) && idx['core|' + task.id] !== true && hasCore_(idx);
+}
+// Not required that day: waived by a 免責券, or let go on a low-energy day.
+function isWaived(task, date, idx) { return isExempt(task, date, idx) || isRelieved(task, date, idx); }
+
+// Dates the day's state was set to 疲勞 (train rows with the pseudo item '_state'), and the ids listed in settings.coreTasks.
+function lowDaysFrom(train) {
+  return (train || []).filter(function (r) { return r.item === '_state' && r.version === '疲勞'; }).map(function (r) { return r.date; });
+}
+function coreIdsFrom(settings) {
+  return String((settings && settings.coreTasks) || '').split(/[,、\s]+/).filter(function (x) { return x; });
+}
+function extrasFrom(train, settings) { return { low: lowDaysFrom(train), core: coreIdsFrom(settings) }; }
 function minutesOn(task, date, idx) { return idx['m|' + date + '|' + task.id] || 0; }
 function tierOn(task, date, idx) { return isDone(task, date, idx) ? idx['t|' + date + '|' + task.id] : ''; }
 function noteOn(task, date, idx) { return idx['n|' + date + '|' + task.id] || ''; }
@@ -174,7 +200,7 @@ function isDue(task, date, idx) {
 
 // Nag only for 必做 tasks: fixed ones always; accumulating ones once the remaining days are too few.
 function needsReminder(task, date, idx) {
-  if (isBonus(task) || !task.remind || isExempt(task, date, idx) || !isDue(task, date, idx)) return false;
+  if (isBonus(task) || !task.remind || isWaived(task, date, idx) || !isDue(task, date, idx)) return false;
   if (!isAccumFreq(task.freq)) return !isDone(task, date, idx);
   var p = progress(task, date, idx);
   var left = p.target - p.done, daysLeft = daysBetween(date, p.end) + 1;
@@ -191,7 +217,7 @@ function dayStats(tasks, date, idx, leave) {
   var due = 0, done = 0;
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    if (!isFixedMust_(t) || !isScheduled(t, date) || isExempt(t, date, idx)) continue;
+    if (!isFixedMust_(t) || !isScheduled(t, date) || isWaived(t, date, idx)) continue;
     due++;
     if (isDone(t, date, idx)) done++;
   }
@@ -223,9 +249,9 @@ function taskStreak(task, date, idx, leave) {
     return n;
   }
   var d = date;
-  if (isScheduled(task, d) && !leave[d] && !isExempt(task, d, idx) && !isDone(task, d, idx)) d = addDays(d, -1);
+  if (isScheduled(task, d) && !leave[d] && !isWaived(task, d, idx) && !isDone(task, d, idx)) d = addDays(d, -1);
   for (i = 0; i < LOOKBACK_DAYS; i++, d = addDays(d, -1)) {
-    if (leave[d] || !isScheduled(task, d) || isExempt(task, d, idx)) continue;
+    if (leave[d] || !isScheduled(task, d) || isWaived(task, d, idx)) continue;
     if (isDone(task, d, idx)) n++;
     else break;
   }
@@ -252,7 +278,7 @@ function dimensionRates(tasks, start, end, today, idx, leave) {
     if (leave[d]) continue;
     for (var i = 0; i < tasks.length; i++) {
       var t = tasks[i];
-      if (!isFixedMust_(t) || !isScheduled(t, d) || isExempt(t, d, idx)) continue;
+      if (!isFixedMust_(t) || !isScheduled(t, d) || isWaived(t, d, idx)) continue;
       var o = out[t.dim] || (out[t.dim] = { due: 0, done: 0, rate: null });
       o.due++;
       if (isDone(t, d, idx)) o.done++;
@@ -382,88 +408,66 @@ function buildPlanText(kind, date, goals) {
 }
 
 // ---- Training menu (the 「訓練」 tab): what you CAN do today. Never a to-do: nothing here affects 必做 rates or streaks. ----
-// Sources: Samsung 練跑教練 level 4 (4 weeks, goal 10 km in 1:09:09), the 12-week fitness plan (docx), and the fixed weekly classes.
+// One merged plan (10/26): home strength A/B (kettlebell + band), Zone 2, one kettlebell interval, your fixed yoga classes
+// and the Saturday gym session, plus at most one 5-minute mobility / pelvic-floor item a day. The old Samsung run plan is retired.
 // Week 1 starts on `start` (a Monday). Weekday numbers: 1 = Monday ... 7 = Sunday.
+//
+// Every item has a tier so the week can be sized to the time you really have:
+//   'min' = the core of the week (what to keep when busy), 'std' = the full plan, 'opt' = only if you feel like it.
+//   fixed items (your classes, the gym) are counted on their own.
 
 var TRAIN_WEEKS = 12;
 var TRAIN_STATES = ['精神好', '普通', '疲勞'];
 
-// Samsung plan: [id, title, km, minutes, quality]. Minutes are the planned durations from the app.
-var RUN_PLAN = [
-  [['run01', '慢跑', 4, 30, false], ['run02', '低強度間歇跑', 2.46, 28, true], ['run03', '慢跑', 4.19, 30, false], ['run04', '慢跑', 6, 45, false]],
-  [['run05', '慢跑', 4.29, 30, false], ['run06', '重複訓練', 1.8, 22, true], ['run07', '慢跑', 5, 38, false], ['run08', '加速跑', 6, 43, true]],
-  [['run09', '慢跑', 6, 44, false], ['run10', '爬坡間歇跑', 0, 20, true], ['run11', '慢跑', 8, 56, false], ['run12', '變速跑', 0, 40, true]],
-  [['run13', '慢跑', 8, 56, false], ['run14', '重複訓練', 2.8, 31, true], ['run15', '加速跑', 8, 57, true]]
-];
-
-// 12-week plan progress table (weeks 1-12): Monday Zone 2 minutes, long Zone 2 minutes (the plan's Saturday).
-var Z2_MINUTES = [45, 45, 50, 50, 50, 55, 55, 60, 60, 60, 60, 60];
-var LONG_MINUTES = [60, 60, 60, 60, 70, 70, 75, 75, 75, 80, 90, 75];
-
-function hiitText_(week) {
-  if (week <= 4) return '4 × 3 分鐘，每組後輕鬆 2 分鐘（高強度累積 12 分）';
-  if (week <= 8) return '5 × 3 分鐘，每組後輕鬆 2 分鐘（高強度累積 15 分）';
-  if (week <= 11) return '4 × 4 分鐘，每組後輕鬆 2–3 分鐘（高強度累積 16 分）';
-  return '4 × 3 分鐘，恢復 2 分鐘（減量週）';
-}
+// Zone 2 minutes by week: Tuesday, and the long Sunday one. A 25-minute Thursday walk/jog brings the week to about 120.
+var Z2_TUE = [40, 40, 40, 40, 40, 45, 45, 45, 45, 45, 45, 40];
+var Z2_SUN = [50, 50, 55, 55, 60, 60, 60, 65, 65, 65, 70, 55];
+var Z2_THU = 25;
 
 var STRENGTH_LOWER = ['腿推或深蹲　4 × 6–10', '羅馬尼亞硬舉　3 × 8–12', '保加利亞分腿蹲　3 × 每側 8–12（先在無痛範圍）', '臀推　3 × 10–15', '腿彎舉　3 × 12–15', '小腿提踵　3 × 15–20（小腿不適就減量）', '靠牆靜蹲　2 × 45–90 秒'];
 var STRENGTH_UPPER = ['臥推或伏地挺身　3 × 8–12', '坐姿划船　3 × 10–15', '高位下拉　3 × 10–15', '肩推　3 × 8–12', '臀橋　3 × 15–20（頂端停 1–2 秒）', 'Pallof press　3 × 每側 12', 'Dead bug　3 × 每側 10', '臀橋等長　2 × 30–45 秒'];
-var CORE_MOVES = ['Plank　3 × 45–60 秒', 'Side plank　3 × 每側 30–45 秒', 'Dead bug　3 × 每側 10', 'Pallof press　3 × 每側 12'];
 var PELVIC_MOVES = ['慢收縮：輕到中等力收縮 5 秒、完全放鬆 5 秒，共 8 次（正常呼吸，不憋氣）', '快速收縮：收 1 秒、放 1 秒，共 10 次', '腹式呼吸與放鬆 1–2 分鐘', '若有疼痛、排尿不適或會陰緊繃，先不要加量，請專業人員評估'];
 var HIP_MOVES = ['髖屈肌伸展（弓箭步）　每側 30–45 秒', '4 字（鴿式）伸展　每側 30–45 秒', '90/90 髖轉換　8 次', '全程不痛、不彈震，呼吸放鬆'];
 
+function intervalSets_(week) { return week <= 4 ? 6 : week <= 8 ? 7 : 8; }
+
 function trainItem_(id, kind, title, icon, minutes, detail, easy, up, extra) {
-  var o = { id: id, kind: kind, title: title, icon: icon, minutes: minutes, detail: detail, easy: easy, up: up || '', fixed: false, time: '白天' };
+  var o = { id: id, kind: kind, title: title, icon: icon, minutes: minutes, detail: detail, easy: easy, up: up || '', fixed: false, tier: 'opt', time: '白天' };
   for (var k in (extra || {})) o[k] = extra[k];
   return o;
 }
 
-function runItem_(r) {
-  var label = r[1] + (r[2] ? ' ' + r[2] + ' 公里' : '') + '・' + r[3] + ' 分';
-  var easyText = r[4] ? '身體累就改成 20–30 分鐘輕鬆慢跑或快走，或直接休息' : '身體累就縮短到 20–30 分鐘，或改快走';
-  var detail = ['三星練跑教練・' + label, r[4] ? '高強度段以 RPE 8／10 為準，不是全力衝刺' : '輕鬆配速（RPE 3–4／10），要能完整說完一句話'];
-  return trainItem_(r[0], 'run', label, '🏃', r[3], detail, easyText, '', { planned: r[3], isRun: true });
+function homeStrengthItem_(day) {
+  return trainItem_(day === 'A' ? 'home-a' : 'home-b', 'strength-home', '力量 ' + day + ' 日（居家）', '🦾', 35,
+    ['壺鈴＋彈力帶，動作與次數在下面的清單，記下每組幾下、幾公斤', '核心動作已經包含在內，不用另外做核心'],
+    '每個動作做 2 組，或只做前 3 個動作', '每個動作多做 1 組，下放放慢到 4 秒', { day: day, tier: 'min', time: '白天或晚上' });
 }
 
-function strengthItem_(week) {
+function zone2Item_(id, title, minutes, tier) {
+  return trainItem_(id, 'run', title, '🏃', minutes, ['輕鬆配速（RPE 3–4／10），能完整說完一句話', '下雨：健身房跑步機、或公寓樓梯快走'],
+    '縮短到 25–30 分，或改快走', '', { planned: minutes, isRun: true, tier: tier });
+}
+
+function intervalItem_(week) {
+  var n = intervalSets_(week);
+  return trainItem_('kb-interval', 'interval', '壺鈴間歇 ' + n + ' 組', '⚡', 20,
+    ['熱身 5 分鐘（開合跳、髖部活動）', '壺鈴擺盪 30 秒全力、休息 90 秒，共 ' + n + ' 組', '收操 3–5 分鐘', '胸悶、頭暈或胸痛就立刻停下'],
+    '改成 20 分鐘輕鬆有氧，或休息（前晚沒睡好、腿很痠時）', '', { tier: 'opt', time: '白天' });
+}
+
+function gymItem_(week) {
   var lower = week % 2 === 1;
-  return trainItem_(lower ? 'strength-lower' : 'strength-upper', 'strength', '重訓：' + (lower ? '下肢肌力＋肌耐力' : '上肢＋臀髖＋核心'), '🏋️', 60,
+  return trainItem_(lower ? 'strength-lower' : 'strength-upper', 'strength', '重訓（健身房）：' + (lower ? '下肢' : '上肢＋臀髖'), '🏋️', 60,
     (lower ? STRENGTH_LOWER : STRENGTH_UPPER).concat(['RPE 7–8，保留 2–3 次餘力；髖緊就縮小動作幅度']),
-    '每個動作減成 2 組，或只做伸展與活動度', '主要動作各多做 1 組，仍保留 2–3 次餘力', { fixed: true, time: '晚上' });
+    '每個動作減成 2 組，或只做伸展與活動度', '主要動作各多做 1 組，仍保留 2–3 次餘力', { fixed: true, tier: 'std', time: '晚上' });
 }
 
 function yogaItem_() {
-  return trainItem_('yoga', 'yoga', '瑜珈課', '🧘', 60, ['固定課程'], '', '', { fixed: true, time: '晚上' });
+  return trainItem_('yoga', 'yoga', '瑜珈課', '🧘', 60, ['固定課程'], '', '', { fixed: true, tier: 'std', time: '晚上' });
 }
 
-function coreItem_() { return trainItem_('core', 'core', '核心 10 分', '🔥', 10, CORE_MOVES, '每項 2 組', '每項多做 1 組'); }
 function pelvicItem_() { return trainItem_('pelvic', 'pelvic', '骨盆底控制與呼吸', '🫁', 5, PELVIC_MOVES, '只做腹式呼吸放鬆', ''); }
 function hipItem_() { return trainItem_('hip', 'mobility', '髖部放鬆 5 分', '🤸', 5, HIP_MOVES, '', ''); }
-function walkItem_() { return trainItem_('walk', 'walk', '輕鬆走路 20–40 分', '🚶', 30, ['恢復日：慢慢走，不追速度'], '', ''); }
-
-function cardioItems_(week, slotIdx) {
-  // slotIdx: 0 Monday, 1 Wednesday, 2 Friday, 3 Sunday.
-  if (week <= 4) {
-    var r = RUN_PLAN[week - 1][slotIdx];
-    return r ? [runItem_(r)] : [];
-  }
-  if (slotIdx === 0) {
-    return [trainItem_('run-z2', 'run', 'Zone 2 慢跑 ' + Z2_MINUTES[week - 1] + ' 分', '🏃', Z2_MINUTES[week - 1],
-      ['輕鬆配速（RPE 3–4／10），能完整說句子', '沒有飛輪／橢圓機就用慢跑或快走'], '縮短到 30 分鐘，或改快走', '', { planned: Z2_MINUTES[week - 1], isRun: true })];
-  }
-  if (slotIdx === 1) {
-    return [trainItem_('run-hiit', 'run', '間歇跑', '⚡', 40,
-      ['熱身 10 分鐘（逐步加速）', hiitText_(week), '高強度段 RPE 8／10，不是全力衝刺；恢復段 RPE 2–3', '收操 5–10 分鐘'], '改成 20–40 分鐘輕鬆有氧，或休息（前晚沒睡好、腿很痠、疲勞高時）', '', { planned: 40, isRun: true })];
-  }
-  if (slotIdx === 3) {
-    var items = [trainItem_('run-long', 'run', '長時間 Zone 2 ' + LONG_MINUTES[week - 1] + ' 分', '🏃', LONG_MINUTES[week - 1],
-      ['輕鬆配速（RPE 3–4／10）', '結束時應該還有餘力，不是耗竭', '前一晚做了下肢重訓的話，腿痠就縮短'], '縮短到 40 分鐘，或改快走', '', { planned: LONG_MINUTES[week - 1], isRun: true })];
-    if (week === 5) items.push(trainItem_('test10k', 'run', '等級測試：跑 10 公里（目標 1:09:09）', '🏁', 70, ['三星練跑教練第 4 級的測試', '準備好再跑，沒有時間壓力'], '改天再測', '', { planned: 70, isRun: true }));
-    return items;
-  }
-  return [];
-}
 
 // -> {week, started, finished, items:[...]} for one date. start: 'YYYY-MM-DD' of week 1's Monday.
 function trainingMenu(date, start) {
@@ -471,14 +475,30 @@ function trainingMenu(date, start) {
   if (diff < 0) return { week: 0, started: false, finished: false, items: [] };
   var raw = Math.floor(diff / 7) + 1;
   var week = Math.min(raw, TRAIN_WEEKS), wd = weekdayOf(date), items = [];
-  if (wd === 1) items = cardioItems_(week, 0).concat([coreItem_(), pelvicItem_()]);
-  else if (wd === 2) items = [hipItem_(), pelvicItem_()];
-  else if (wd === 3) items = cardioItems_(week, 1).concat([yogaItem_()]);
-  else if (wd === 4) items = [yogaItem_(), walkItem_(), hipItem_(), pelvicItem_()];
-  else if (wd === 5) items = cardioItems_(week, 2).concat([coreItem_(), pelvicItem_()]);
-  else if (wd === 6) items = [strengthItem_(week)];
-  else items = cardioItems_(week, 3).concat([pelvicItem_()]);
+  if (wd === 1) items = [homeStrengthItem_('A'), pelvicItem_()];
+  else if (wd === 2) items = [zone2Item_('run-z2', 'Zone 2 ' + Z2_TUE[week - 1] + ' 分', Z2_TUE[week - 1], 'std'), hipItem_()];
+  else if (wd === 3) items = [yogaItem_(), intervalItem_(week)];
+  else if (wd === 4) items = [yogaItem_(), zone2Item_('run-short', 'Zone 2 短 ' + Z2_THU + ' 分（走路或慢跑）', Z2_THU, 'opt'), hipItem_()];
+  else if (wd === 5) items = [homeStrengthItem_('B'), pelvicItem_()];
+  else if (wd === 6) items = [gymItem_(week)];
+  else items = [zone2Item_('run-long', '長 Zone 2 ' + Z2_SUN[week - 1] + ' 分', Z2_SUN[week - 1], 'min'), pelvicItem_()];
   return { week: week, started: true, finished: raw > TRAIN_WEEKS, items: items };
+}
+
+// The week that contains `date`, sized three ways: the core you keep when busy (min), the full plan (std), and the extras (opt).
+// Your fixed classes and the gym session are counted apart. -> {min, std, opt, fixed}, all in minutes.
+function trainingWeekLoad(date, start) {
+  var monday = addDays(date, -(weekdayOf(date) - 1)), out = { min: 0, std: 0, opt: 0, fixed: 0 };
+  for (var i = 0; i < 7; i++) {
+    var m = trainingMenu(addDays(monday, i), start);
+    m.items.forEach(function (it) {
+      if (it.fixed) { out.fixed += it.minutes; return; }
+      if (it.tier === 'min') { out.min += it.minutes; out.std += it.minutes; }
+      else if (it.tier === 'std') out.std += it.minutes;
+      else out.opt += it.minutes;
+    });
+  }
+  return out;
 }
 
 // What to show for an item given today's state (精神好 / 普通 / 疲勞).
@@ -516,7 +536,7 @@ if (typeof module !== 'undefined' && module.exports) {
     dimensionRates: dimensionRates, dailyRates: dailyRates, periodExtras: periodExtras, decideReminder: decideReminder,
     buildReminderText: buildReminderText, buildReminderKeyboard: buildReminderKeyboard, decidePeriodic: decidePeriodic,
     buildMonthReport: buildMonthReport, buildPlanText: buildPlanText, minutesOn: minutesOn, tierOn: tierOn, parseOption: parseOption, noteItem: noteItem, parseNote: parseNote, iconOf: iconOf, SLOTS: SLOTS,
-    trainingMenu: trainingMenu, trainVariant: trainVariant, trainingSummary: trainingSummary,
+    trainingMenu: trainingMenu, trainingWeekLoad: trainingWeekLoad, trainVariant: trainVariant, trainingSummary: trainingSummary,
     buildTrainingLine: buildTrainingLine, TRAIN_STATES: TRAIN_STATES
   };
 }
@@ -537,7 +557,7 @@ var SKILLS = ['體能', '健康', '財商', '學習', '關係'];
 
 var SKILL_TITLES = {
   '體能': ['動起來的人', '晨動者', '規律運動者', '穩定跑者', '體能新星', '肌耐力玩家', '耐力戰士', '鐵人預備軍', '精實身形', '體能大師',
-    '持久力玩家', '間歇掌控者', '力量鍛造師', '全能運動家', '體能宗師', '不倦的行者', '鋼鐵意志', '耐力傳奇', '巔峰身形', '體能傳說'],
+    '耐力玩家', '間歇掌控者', '力量鍛造師', '全能運動家', '體能宗師', '不倦的行者', '鋼鐵意志', '耐力傳奇', '巔峰身形', '體能傳說'],
   '健康': ['養生新手', '早睡嘗試者', '補水達人', '規律生活者', '血糖守護者', '睡眠管理師', '身心平衡者', '健康職人', '養生達人', '健康大師',
     '作息建築師', '飲食設計師', '恢復力專家', '身心守護者', '健康宗師', '長壽習慣家', '能量管理者', '自癒力達人', '養生傳奇', '健康傳說'],
   '財商': ['記帳新手', '帳目小幫手', '收支觀察者', '預算管理者', '資產園丁', '現金流掌舵手', '理財策略家', '複利信徒', '財務自由路上人', '財商大師',
@@ -682,7 +702,7 @@ function computeGame(data, today) {
   var tasks = data.tasks || [], logs = data.logs || [], train = data.train || [], leaveArr = data.leave || [];
   var slips = data.slips || [], items = data.slipItems || [], reds = data.redemptions || [], chs = data.challenges || [];
   var settings = data.settings || {};
-  var idx = indexLogs(logs, data.exempts || []), leave = indexLeave(leaveArr);
+  var idx = indexLogs(logs, data.exempts || [], extrasFrom(train, data.settings)), leave = indexLeave(leaveArr);
   var byId = {};
   tasks.forEach(function (t) { byId[t.id] = t; });
   var logsBy = groupBy_(logs, 'date'), trainBy = groupBy_(train, 'date'), slipsBy = groupBy_(slips, 'date');
@@ -779,7 +799,7 @@ function computeGame(data, today) {
     var sk = {};
     SKILLS.forEach(function (s) { sk[s] = { due: 0, done: 0, extra: 0 }; });
     tasks.forEach(function (t) {
-      if (!isFixedMust_(t) || !isScheduled(t, d) || isExempt(t, d, idx)) return;
+      if (!isFixedMust_(t) || !isScheduled(t, d) || isWaived(t, d, idx)) return;
       var s = skillOf(t);
       if (!s) return;
       sk[s].due++;
@@ -936,3 +956,512 @@ function challengeDrawsLeft(date, challenges, pending) {
 function challengeText(c) {
   return c.minutes + ' 分鐘內完成 ' + c.move + ' ' + c.amount + ' ' + c.unit;
 }
+
+// Insights from the health sheet, the daily self check-in, the strength log and the habit logs. Pure functions: no clock, no DOM.
+// Concatenated after game.js by build.py; it uses logic.js functions (addDays, indexLogs, dayStats, ...) directly.
+//
+// health row:      {date (wake-up day), bed 'YYYY-MM-DD HH:MM', wake, sleepMin, deepMin, steps, rhr, weight, bodyFat}
+// check-in:        {date, energy, mood, stress, sore (1-5), flags: [names], extra: {name: 1-5}}
+// strength move:   {id, name, day 'A'|'B', sets, repsLow, repsHigh, unit '次'|'秒', weighted, progress, active, order}
+// strength row:    {date, move (name), reps: [n, ...], weight (kg, 0 = bodyweight), note}
+// goal map:        [{taskId, goal '1'|'2'|'3'}]
+
+var GOALS = [
+  { id: '1', name: '外貌體態', icon: '💪' },
+  { id: '2', name: '健康長壽', icon: '🌿' },
+  { id: '3', name: '耐力', icon: '🔥' }
+];
+
+// Self check-in: 1-5 scales (worseHigh: a high number is the bad end) and yes/no flags (good: yes is the good answer).
+var CHECKIN_METRICS = [
+  { key: 'energy', label: '精力', low: '低', high: '高', worseHigh: false },
+  { key: 'mood', label: '心情', low: '差', high: '好', worseHigh: false },
+  { key: 'stress', label: '壓力', low: '小', high: '大', worseHigh: true },
+  { key: 'sore', label: '痠痛', low: '無', high: '很痠', worseHigh: true }
+];
+var CHECKIN_FLAGS = [
+  { name: '蛋白質達標', good: true },
+  { name: '睡前3小時沒進食', good: true },
+  { name: '酒精', good: false },
+  { name: '咖啡因超過2杯', good: false }
+];
+
+function timeMin_(s) {
+  var m = /(\d{2}):(\d{2})$/.exec(String(s || ''));
+  return m ? +m[1] * 60 + +m[2] : null;
+}
+
+// Bedtime on a line that runs past midnight: 23:40 -> 1420, 00:30 -> 1470 (hours before noon belong to the night before).
+function bedLine_(s) {
+  var m = timeMin_(s);
+  if (m === null) return null;
+  return m < 720 ? m + 1440 : m;
+}
+
+function fmtClock_(m) {
+  m = ((Math.round(m) % 1440) + 1440) % 1440;
+  return pad2_(Math.floor(m / 60)) + ':' + pad2_(m % 60);
+}
+
+function mean_(a) {
+  if (!a.length) return null;
+  var s = 0;
+  for (var i = 0; i < a.length; i++) s += a[i];
+  return s / a.length;
+}
+
+function stdev_(a) {
+  if (a.length < 2) return null;
+  var m = mean_(a), v = 0;
+  for (var i = 0; i < a.length; i++) v += (a[i] - m) * (a[i] - m);
+  return Math.sqrt(v / a.length);
+}
+
+function rowsBetween_(rows, start, end) {
+  return (rows || []).filter(function (r) { return r.date >= start && r.date <= end; });
+}
+
+function notNull_(x) { return x !== null && x !== undefined && !isNaN(x); }
+function hasSleep_(r) { return Number(r.sleepMin) > 0 && bedLine_(r.bed) !== null; }
+function byDateAsc_(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }
+
+// Last 7 days against the 14 days before: how long, how late, how regular, and whether bedtime is drifting later.
+function sleepSummary(health, today) {
+  var all = health || [];
+  var w = rowsBetween_(all, addDays(today, -6), today).filter(hasSleep_).sort(byDateAsc_);
+  var prior = rowsBetween_(all, addDays(today, -20), addDays(today, -7)).filter(hasSleep_);
+  var bed = w.map(function (r) { return bedLine_(r.bed); }).filter(notNull_);
+  var wake = w.map(function (r) { return timeMin_(r.wake); }).filter(notNull_);
+  var priorBed = prior.map(function (r) { return bedLine_(r.bed); }).filter(notNull_);
+  var dur = w.map(function (r) { return Number(r.sleepMin); });
+  var deep = w.map(function (r) { return Number(r.deepMin); }).filter(function (x) { return x > 0; });
+  var out = {
+    n: w.length, sleepMin: mean_(dur), deepMin: mean_(deep), bed: mean_(bed), wake: mean_(wake), bedSd: stdev_(bed),
+    priorBed: mean_(priorBed), drift: null, alert: false, last: w.length ? w[w.length - 1] : null
+  };
+  if (out.bed !== null && out.priorBed !== null) out.drift = out.bed - out.priorBed;
+  out.alert = out.drift !== null && out.drift >= 30 && out.n >= 3;
+  return out;
+}
+
+// [{date, value}] for a numeric field over the last `days` days, skipping days without data.
+function healthSeries(health, today, days, field) {
+  var start = addDays(today, -(days - 1)), out = [];
+  rowsBetween_(health, start, today).sort(byDateAsc_).forEach(function (r) {
+    var v = field === 'bedLine' ? bedLine_(r.bed) : Number(r[field]);
+    if (notNull_(v) && v > 0) out.push({ date: r.date, value: v });
+  });
+  return out;
+}
+
+function checkinOn(checkins, date) {
+  var list = checkins || [];
+  for (var i = 0; i < list.length; i++) if (list[i].date === date) return list[i];
+  return null;
+}
+
+// Average of each 1-5 metric (and each custom one) over the last `days` days, and how many days each flag was ticked.
+function checkinSummary(checkins, today, days) {
+  var rows = rowsBetween_(checkins, addDays(today, -(days - 1)), today);
+  var out = { n: rows.length, avg: {}, extra: {}, flags: {} };
+  CHECKIN_METRICS.forEach(function (m) {
+    out.avg[m.key] = mean_(rows.map(function (r) { return Number(r[m.key]); }).filter(function (x) { return x > 0; }));
+  });
+  var extraVals = {};
+  rows.forEach(function (r) {
+    var e = r.extra || {};
+    for (var k in e) if (Number(e[k]) > 0) (extraVals[k] = extraVals[k] || []).push(Number(e[k]));
+    (r.flags || []).forEach(function (f) { out.flags[f] = (out.flags[f] || 0) + 1; });
+  });
+  for (var k in extraVals) out.extra[k] = mean_(extraVals[k]);
+  return out;
+}
+
+// ---- strength log ----
+
+// What to do next time for one move, from the history of that move.
+function strengthAdvice(move, rows) {
+  var mine = (rows || []).filter(function (r) { return r.move === move.name; }).sort(byDateAsc_).reverse();
+  var last = mine[0] || null;
+  var target = move.sets + ' 組 × ' + move.repsLow + (move.repsHigh > move.repsLow ? '–' + move.repsHigh : '') + ' ' + move.unit;
+  if (!last) return { last: null, target: target, ready: false, best: 0, text: '第一次：先用輕鬆的重量，把動作做標準' };
+  var reps = last.reps || [];
+  var hit = reps.length >= move.sets && reps.slice(0, move.sets).every(function (n) { return n >= move.repsHigh; });
+  var best = 0;
+  mine.forEach(function (r) { if (Number(r.weight) > best) best = Number(r.weight); });
+  return {
+    last: last, target: target, ready: hit, best: best,
+    text: hit ? '上次每組都做到 ' + move.repsHigh + ' ' + move.unit + '，這次加一階：' + (move.progress || '加重或放慢') : '目標是每組做到 ' + move.repsHigh + ' ' + move.unit + '，再練一次'
+  };
+}
+
+// A and B days take turns: the day after the one logged last.
+function nextStrengthDay(moves, rows) {
+  var byName = {}, lastDate = '';
+  (moves || []).forEach(function (m) { byName[m.name] = m; });
+  (rows || []).forEach(function (r) { if (byName[r.move] && r.date > lastDate) lastDate = r.date; });
+  if (!lastDate) return 'A';
+  var count = { A: 0, B: 0 };
+  rows.forEach(function (r) { if (r.date === lastDate && byName[r.move]) count[byName[r.move].day] = (count[byName[r.move].day] || 0) + 1; });
+  return count.A >= count.B ? 'B' : 'A';
+}
+
+function repsText(reps) { return (reps || []).join('、'); }
+
+// "12,12,10" -> [12, 12, 10]; anything that is not a positive whole number is dropped.
+function parseReps(s) {
+  return String(s === undefined || s === null ? '' : s).split(/[,、\s]+/).map(function (x) { return parseInt(x, 10); }).filter(function (n) { return n > 0 && n < 1000; });
+}
+
+// ---- goals 1 / 2 / 3: how the tasks mapped to each goal did this week against last week ----
+
+function goalRate_(tasks, ids, idx, leave, endDate) {
+  var due = 0, done = 0;
+  var start = addDays(endDate, -6);
+  tasks.forEach(function (t) {
+    if (!t.active || ids.indexOf(t.id) < 0) return;
+    if (isAccumFreq(t.freq)) {
+      if (t.freq.indexOf('weekly') !== 0) return;
+      var p = progress(t, endDate, idx);
+      due += 1; done += Math.min(1, p.done / p.target);
+      return;
+    }
+    for (var d = start; d <= endDate; d = addDays(d, 1)) {
+      if (leave[d] || !isScheduled(t, d) || isWaived(t, d, idx)) continue;
+      due++;
+      if (isDone(t, d, idx)) done++;
+    }
+  });
+  return due ? done / due : null;
+}
+
+function goalProgress(tasks, goalMap, idx, leave, today) {
+  return GOALS.map(function (g) {
+    var ids = (goalMap || []).filter(function (m) { return m.goal === g.id; }).map(function (m) { return m.taskId; });
+    var rate = goalRate_(tasks, ids, idx, leave, today), prev = goalRate_(tasks, ids, idx, leave, addDays(today, -7));
+    return { id: g.id, name: g.name, icon: g.icon, tasks: ids.length, rate: rate, prev: prev, delta: rate !== null && prev !== null ? rate - prev : null };
+  });
+}
+
+// ---- monthly review ----
+
+function monthWindow_(month, today) {
+  var y = +month.slice(0, 4), m = +month.slice(5, 7);
+  var last = fmtDate_(new Date(Date.UTC(y, m, 0)));
+  return { start: month + '-01', end: last < today ? last : today };
+}
+
+function reviewOf_(data, month, today) {
+  var w = monthWindow_(month, today), out = { month: month, start: w.start, end: w.end };
+  if (w.end < w.start) return out;
+  var idx = indexLogs(data.logs || [], data.exempts || [], data.extras), leave = indexLeave(data.leave || []);
+  var due = 0, done = 0, qualified = 0, days = 0;
+  for (var d = w.start; d <= w.end; d = addDays(d, 1)) {
+    var st = dayStats(data.tasks || [], d, idx, leave);
+    if (st.rate === null) continue;
+    days++; due += st.due; done += st.done;
+    if (st.rate >= OVERALL_THRESHOLD) qualified++;
+  }
+  out.days = days; out.rate = due ? done / due : null; out.qualified = qualified;
+  var hs = rowsBetween_(data.health || [], w.start, w.end).sort(byDateAsc_);
+  var sleepRows = hs.filter(hasSleep_);
+  out.sleepMin = mean_(sleepRows.map(function (r) { return Number(r.sleepMin); }));
+  out.bed = mean_(sleepRows.map(function (r) { return bedLine_(r.bed); }).filter(notNull_));
+  out.steps = mean_(hs.map(function (r) { return Number(r.steps); }).filter(function (x) { return x > 0; }));
+  out.rhr = mean_(hs.map(function (r) { return Number(r.rhr); }).filter(function (x) { return x > 0; }));
+  var ws = hs.filter(function (r) { return Number(r.weight) > 0; }), fs = hs.filter(function (r) { return Number(r.bodyFat) > 0; });
+  out.weightFirst = ws.length ? Number(ws[0].weight) : null; out.weightLast = ws.length ? Number(ws[ws.length - 1].weight) : null;
+  out.fatFirst = fs.length ? Number(fs[0].bodyFat) : null; out.fatLast = fs.length ? Number(fs[fs.length - 1].bodyFat) : null;
+  var zone = 0, strengthDays = {};
+  var byId = {};
+  (data.tasks || []).forEach(function (t) { byId[t.id] = t; });
+  (data.logs || []).forEach(function (l) {
+    if (l.date < w.start || l.date > w.end) return;
+    var t = byId[l.taskId];
+    if (!t) return;
+    if (t.freq === 'weekly_min' && /跑|Zone/.test(t.name)) zone += Number(l.minutes) || 0;
+    if (/重量/.test(t.name)) strengthDays[l.date] = true;
+  });
+  (data.strength || []).forEach(function (r) { if (r.date >= w.start && r.date <= w.end) strengthDays[r.date] = true; });
+  out.zone2Min = zone; out.strengthDays = Object.keys(strengthDays).length;
+  var cs = checkinSummary(data.checkins || [], w.end, daysBetween(w.start, w.end) + 1);
+  out.checkins = cs.n; out.energy = cs.avg.energy; out.mood = cs.avg.mood; out.stress = cs.avg.stress; out.sore = cs.avg.sore;
+  return out;
+}
+
+function monthReview(data, month, today) {
+  var prev = addDays(month + '-01', -1).slice(0, 7);
+  return { cur: reviewOf_(data, month, today), prev: reviewOf_(data, prev, today) };
+}
+
+// Plain-text summary: easy to paste into a chat for a proper review.
+function monthReviewText(rev) {
+  var c = rev.cur, p = rev.prev, L = [];
+  function pctOf(r) { return r === null || r === undefined ? '—' : Math.round(r * 100) + '%'; }
+  function hrs(m) { return notNull_(m) ? (Math.round(m / 6) / 10) + ' 小時' : '—'; }
+  L.push(c.month + ' 月回顧（' + c.start + ' ～ ' + c.end + '）');
+  L.push('必做完成率 ' + pctOf(c.rate) + (p.rate !== null && p.rate !== undefined ? '（上月 ' + pctOf(p.rate) + '）' : '') + '，達標 ' + c.qualified + ' 天');
+  L.push('睡眠 平均 ' + hrs(c.sleepMin) + (notNull_(p.sleepMin) ? '（上月 ' + hrs(p.sleepMin) + '）' : '') + '，平均入睡 ' + (notNull_(c.bed) ? fmtClock_(c.bed) : '—') + (notNull_(p.bed) ? '（上月 ' + fmtClock_(p.bed) + '）' : ''));
+  L.push('步數 平均 ' + (notNull_(c.steps) ? Math.round(c.steps) : '—') + (notNull_(p.steps) ? '（上月 ' + Math.round(p.steps) + '）' : '') + '，最低心率平均 ' + (notNull_(c.rhr) ? Math.round(c.rhr) : '—'));
+  if (notNull_(c.weightFirst)) L.push('體重 ' + c.weightFirst + ' → ' + c.weightLast + ' kg' + (notNull_(c.fatFirst) ? '，體脂 ' + c.fatFirst + ' → ' + c.fatLast + '%' : ''));
+  L.push('重量訓練 ' + c.strengthDays + ' 天（上月 ' + (p.strengthDays || 0) + '），Zone 2 共 ' + c.zone2Min + ' 分鐘（上月 ' + (p.zone2Min || 0) + '）');
+  if (c.checkins) L.push('自評（' + c.checkins + ' 天）精力 ' + (notNull_(c.energy) ? c.energy.toFixed(1) : '—') + '、心情 ' + (notNull_(c.mood) ? c.mood.toFixed(1) : '—') + '、壓力 ' + (notNull_(c.stress) ? c.stress.toFixed(1) : '—') + '、痠痛 ' + (notNull_(c.sore) ? c.sore.toFixed(1) : '—'));
+  return L.join('\n');
+}
+
+// Daily ledger helpers: expenses (記帳), meals (餐費) and the diary (日記). Ported from the old 手機記錄 project (mobile_reminders/src/Logic.gs),
+// so the rows written here have exactly the shape the rest of that system (budget alerts, pasting into the workbook) expects.
+// Concatenated after insights.js by build.py; it uses logic.js functions (toDate_, ...) directly.
+
+// Sheet YAAG: one sheet per year; the diary column is 2 * month (1-based); the row is day + 1.
+function yaagCell(dateStr) {
+  var d = toDate_(dateStr);
+  return { sheetName: String(d.getUTCFullYear()), row: d.getUTCDate() + 1, col: 2 * (d.getUTCMonth() + 1) };
+}
+
+function appendDiary(existing, addition) {
+  var add = String(addition).trim();
+  if (!add) return existing;
+  var old = String(existing).replace(/\s+$/, '');
+  return old ? old + '\n' + add : add;
+}
+
+// A cell that starts with = + - @ would be read as a formula; a leading apostrophe keeps it text.
+function safeSheetText(s) {
+  s = String(s);
+  return /^[=+\-@]/.test(s) ? "'" + s : s;
+}
+
+function fullwidthDigits_(raw) {
+  return String(raw).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/[,，\s]/g, '');
+}
+
+function parseAmount(raw) {
+  if (raw === null || raw === undefined) throw new Error('金額不正確，請輸入大於 0 的數字');
+  var s = fullwidthDigits_(raw);
+  if (!/^\d+(\.\d+)?$/.test(s)) throw new Error('金額不正確，請輸入大於 0 的數字');
+  var n = Math.round(parseFloat(s));
+  if (!(n > 0)) throw new Error('金額不正確，請輸入大於 0 的數字');
+  return n;
+}
+
+// -> [日期, 年月, 收支類型, 大類, 子類, 項目描述, 現金金額, 刷卡金額, 總金額, 備註]
+function expenseRow(input) {
+  toDate_(input.date);
+  if (input.type !== '支出' && input.type !== '收入') throw new Error('收支類型不正確');
+  if (input.method !== '現金' && input.method !== '刷卡') throw new Error('付款方式不正確');
+  if (!String(input.category || '').trim()) throw new Error('請選擇大類');
+  var amt = parseAmount(input.amount);
+  var cash = input.method === '現金';
+  return [input.date, input.date.slice(0, 7), input.type,
+    safeSheetText(input.category), safeSheetText(input.sub || ''), safeSheetText(input.desc || ''),
+    cash ? amt : 0, cash ? '' : amt, amt, safeSheetText(input.note || '')];
+}
+
+// ---- 餐費 (mirrors sheet 3_每日餐費 columns A..O: 日期 年月 星期, then 內容/分數/金額 x 4 meals) ----
+var MEAL_COLS_ = { '早餐': 4, '午餐': 7, '晚餐': 10, '消夜': 13 };
+var MEAL_NAMES = ['早餐', '午餐', '晚餐', '消夜'];
+
+function mealColumns(meal) {
+  if (!MEAL_COLS_.hasOwnProperty(meal)) throw new Error('餐別不正確');
+  return { content: MEAL_COLS_[meal], amount: MEAL_COLS_[meal] + 2 };
+}
+
+// Blank means "no amount"; zero is allowed (a free meal); negatives and text are rejected.
+function parseMealAmount(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return 0;
+  var s = fullwidthDigits_(raw);
+  if (!/^\d+(\.\d+)?$/.test(s)) throw new Error('金額不正確，請輸入 0 或正數');
+  return Math.round(parseFloat(s));
+}
+
+// existing: the 15-element row of that date (or null). Returns a NEW 15-element row.
+// The same meal twice: contents joined by a space, amounts added. The 分數 columns stay blank (sheet formulas own them).
+function mergeMeal(existing, input) {
+  var d = toDate_(input.date);
+  var c = mealColumns(input.meal);
+  var content = String(input.content || '').trim();
+  var amount = parseMealAmount(input.amount);
+  if (!content && amount === 0) throw new Error('請填寫內容或金額');
+  var row = existing ? existing.slice() : [];
+  for (var i = 0; i < 15; i++) if (row[i] === undefined || row[i] === null) row[i] = '';
+  row[0] = input.date;
+  row[1] = input.date.slice(0, 7);
+  row[2] = '日一二三四五六'.charAt(d.getUTCDay());
+  var old = String(row[c.content - 1]);
+  row[c.content - 1] = old && content ? old + ' ' + content : (old || content);
+  var prev = row[c.amount - 1] === '' ? 0 : Number(row[c.amount - 1]);
+  var total = prev + amount;
+  row[c.amount - 1] = (total > 0 || row[c.amount - 1] !== '') ? total : '';
+  return row;
+}
+
+// Meal to preselect for a clock hour (0-23).
+function defaultMeal(hour) { return hour < 10 ? '早餐' : hour < 15 ? '午餐' : hour < 21 ? '晚餐' : '消夜'; }
+
+// Custom reminders (待辦提醒) and the budget view, ported from the old 手機記錄 project (mobile_reminders/src/Logic.gs and BudgetLogic.gs).
+// The reminders themselves are still sent by that project's 5-minute trigger from the same sheet 提醒清單; the habit app only edits the list.
+// Concatenated after ledger.js by build.py; it uses logic.js functions (toDate_, ...) directly.
+
+function isValidDate(dateStr) {
+  try { toDate_(dateStr); return true; } catch (e) { return false; }
+}
+
+function normalizeTime(raw) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(raw).trim());
+  if (!m || +m[1] > 23 || +m[2] > 59) throw new Error('時間格式需為 HH:MM');
+  return (m[1].length < 2 ? '0' : '') + m[1] + ':' + m[2];
+}
+
+// Validates and normalises user-supplied todo input; the id is assigned by the caller.
+// repeat: once (needs a date) / daily / weekly (weekdays 0-6, Sunday = 0) / monthly (monthDay 1-31).
+function validateTodo(t) {
+  var text = String(t.text || '').trim();
+  if (!text) throw new Error('請填寫提醒內容');
+  var time;
+  try { time = normalizeTime(t.time); } catch (e) { throw new Error('時間格式需為 HH:MM'); }
+  var repeat = t.repeat || 'once';
+  if (['once', 'daily', 'weekly', 'monthly'].indexOf(repeat) === -1) throw new Error('重複方式不正確');
+  var date = '', weekdays = [], monthDay = 0;
+  if (repeat === 'once') {
+    date = String(t.date || '');
+    if (!isValidDate(date)) throw new Error('請選擇有效日期');
+  } else if (repeat === 'weekly') {
+    weekdays = (t.weekdays || []).map(Number);
+    if (!weekdays.length || weekdays.some(function (w) { return !(w >= 0 && w <= 6 && w % 1 === 0); })) throw new Error('請選擇星期');
+  } else if (repeat === 'monthly') {
+    monthDay = Number(t.monthDay);
+    if (!(monthDay >= 1 && monthDay <= 31 && monthDay % 1 === 0)) throw new Error('每月日期需為 1~31 日');
+  }
+  return {
+    id: t.id || '', text: text, time: time, repeat: repeat, date: date, weekdays: weekdays, monthDay: monthDay,
+    enabled: t.enabled === undefined ? true : !!t.enabled, done: !!t.done, lastSent: t.lastSent || ''
+  };
+}
+
+function describeTodo(t) {
+  var wd = ['日', '一', '二', '三', '四', '五', '六'];
+  var when = { once: t.date, daily: '每天', weekly: '每週' + (t.weekdays || []).map(function (d) { return wd[d]; }).join('、'), monthly: '每月' + t.monthDay + '日' }[t.repeat];
+  return when + ' ' + t.time;
+}
+
+// ---- Budget (read-only view of the old budget alerts). Budget = mean monthly spend over the last 12 months x BUDGET_BUFFER, unless overridden. ----
+
+var BUDGET_BUFFER = 1.2;
+var BUDGET_MIN_MONTHS = 9;
+var BUDGET_MEAL_CAT = '餐費';
+var BUDGET_EXCLUDED = ['房租', '保險', '醫療', '債', '旅遊', '禮金', '報稅', '器材', '其他支出', '其他未列支出', '按摩', '文書'];
+var BUDGET_MEAL_COLS = ['早餐金額', '午餐金額', '晚餐金額', '消夜金額'];
+var MIRROR_MEAL_HEADER = ['日期', '總額'];
+
+function isNum_(v) { return typeof v === 'number' && isFinite(v); }
+
+// First row that contains every header name, or -1.
+function findHeaderRow(values, names) {
+  for (var i = 0; i < values.length; i++) {
+    var row = values[i].map(String);
+    if (names.every(function (n) { return row.indexOf(n) >= 0; })) return i;
+  }
+  return -1;
+}
+
+// 總金額 when it is a number, otherwise 現金 + 刷卡 (anything non-numeric counts as 0).
+function rowAmount(r) {
+  if (isNum_(r.total)) return r.total;
+  return (isNum_(r.cash) ? r.cash : 0) + (isNum_(r.card) ? r.card : 0);
+}
+
+// The n months before ym ('YYYY-MM'), newest first.
+function lastMonths(ym, n) {
+  var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)), out = [];
+  for (var i = 0; i < n; i++) {
+    m--;
+    if (m === 0) { m = 12; y--; }
+    out.push(y + '-' + (m < 10 ? '0' : '') + m);
+  }
+  return out;
+}
+
+// rows: [{ym, cat, amount}] -> {cat: {ym: sum}}
+function aggregateSpend(rows) {
+  var out = {};
+  rows.forEach(function (r) {
+    if (!isNum_(r.amount)) return;
+    out[r.cat] = out[r.cat] || {};
+    out[r.cat][r.ym] = (out[r.cat][r.ym] || 0) + r.amount;
+  });
+  return out;
+}
+
+// settings: [{cat, budget: number|null, monitor: '自動'|'是'|'否'}]. Returns the monitored categories with a budget.
+function buildPlan(hist, months, settings) {
+  var byCat = {}, cats = {}, out = [];
+  (settings || []).forEach(function (s) { byCat[s.cat] = s; cats[s.cat] = true; });
+  Object.keys(hist).forEach(function (c) { cats[c] = true; });
+  Object.keys(cats).sort().forEach(function (cat) {
+    var s = byCat[cat] || {}, monitor = s.monitor || '自動';
+    if (monitor === '否') return;
+    var h = hist[cat] || {}, sum = 0, active = 0;
+    months.forEach(function (m) { var v = h[m] || 0; sum += v; if (v > 0) active++; });
+    var auto = Math.round(sum / months.length * BUDGET_BUFFER);
+    var eligible = monitor === '是' || (active >= BUDGET_MIN_MONTHS && BUDGET_EXCLUDED.indexOf(cat) < 0);
+    if (!eligible) return;
+    if (isNum_(s.budget) && s.budget > 0) out.push({ cat: cat, budget: s.budget, source: '覆寫' });
+    else if (auto > 0) out.push({ cat: cat, budget: auto, source: '自動' });
+  });
+  return out;
+}
+
+function mergeSpent(mirror, inbox) {
+  var out = {};
+  [mirror, inbox].forEach(function (src) { Object.keys(src).forEach(function (c) { out[c] = (out[c] || 0) + src[c]; }); });
+  return out;
+}
+
+function buildUsage(plan, spent) {
+  return plan.map(function (p) {
+    var s = spent[p.cat] || 0;
+    return { cat: p.cat, spent: s, budget: p.budget, pct: Math.round(s / p.budget * 100), source: p.source };
+  }).sort(function (a, b) { return b.pct - a.pct; });
+}
+
+function dayNumber_(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s));
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000 : NaN;
+}
+
+// info: {sourceModified, mirrored, result} as displayed on the mirror's 更新資訊 sheet.
+function mirrorUsable(info, today) {
+  if (info.result !== '成功') return { ok: false, reason: '鏡像更新結果：' + (info.result || '空白') };
+  var age = dayNumber_(today) - dayNumber_(info.mirrored);
+  if (isNaN(age)) return { ok: false, reason: '讀不到鏡像更新時間' };
+  if (age > 2) return { ok: false, reason: '鏡像已 ' + age + ' 天沒更新（最後 ' + info.mirrored + '）' };
+  return { ok: true, reason: '' };
+}
+
+function excelNewerThanMirror(info) {
+  if (!info.sourceModified || !info.mirrored) return false;
+  return String(info.sourceModified) > String(info.mirrored);
+}
+
+// Sheet values -> objects keyed by the header row found via `required`; blank rows dropped.
+function tableToObjects(values, required) {
+  var h = findHeaderRow(values, required);
+  if (h < 0) throw new Error('找不到表頭：' + required.join('、'));
+  var head = values[h].map(String), out = [];
+  values.slice(h + 1).forEach(function (row) {
+    if (row.every(function (c) { return c === '' || c === null; })) return;
+    var o = {};
+    head.forEach(function (name, i) { if (name) o[name] = row[i]; });
+    out.push(o);
+  });
+  return out;
+}
+
+// Phone 餐費收件匣: one 金額 column per meal.
+function mealAmount(o) {
+  return BUDGET_MEAL_COLS.reduce(function (s, c) { return s + (isNum_(o[c]) ? o[c] : 0); }, 0);
+}
+
+// The mirror's 3_每日餐費 has a two-row header whose four meal columns are all just 金額; 總額 is their sum.
+function mirrorMealAmount(o) { return isNum_(o['總額']) ? o['總額'] : 0; }

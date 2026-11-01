@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js and todos.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js and dreams.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -660,6 +660,18 @@ var ACHIEVEMENTS = [
   { id: 'rw8', cat: '體能', name: '跑步八週達標', desc: '連續 8 週達到每週跑步目標', coins: 15, test: function (S) { return S.runWeekNow >= 8; } },
   { id: 'k10k', cat: '體能', name: '10 公里完成', desc: '完成三星練跑教練的 10 公里等級測試', coins: 15, test: function (S) { return S.test10k; } },
   { id: 'p12', cat: '體能', name: '走完 12 週計畫', desc: '訓練計畫走到第 12 週', coins: 20, test: function (S) { return S.plan12; } },
+  { id: 'lr60', cat: '夢想', name: '長跑一小時', desc: '單次跑步滿 60 分鐘', coins: 3, test: function (S) { return S.runLongest >= 60; } },
+  { id: 'lr90', cat: '夢想', name: '長跑九十分', desc: '單次跑步滿 90 分鐘', coins: 5, test: function (S) { return S.runLongest >= 90; } },
+  { id: 'lr120', cat: '夢想', name: '長跑兩小時', desc: '單次跑步滿 120 分鐘，半馬等級的耐力', coins: 10, test: function (S) { return S.runLongest >= 120; } },
+  { id: 'y10', cat: '夢想', name: '瑜珈入門', desc: '手錶記到瑜伽累計 10 次', coins: 3, test: function (S) { return S.yogaTotal >= 10; } },
+  { id: 'y30', cat: '夢想', name: '瑜珈常客', desc: '手錶記到瑜伽累計 30 次', coins: 8, test: function (S) { return S.yogaTotal >= 30; } },
+  { id: 'y60', cat: '夢想', name: '瑜珈達人', desc: '手錶記到瑜伽累計 60 次', coins: 15, test: function (S) { return S.yogaTotal >= 60; } },
+  { id: 'lf20', cat: '夢想', name: '重訓起步', desc: '重量訓練累計打卡 20 次', coins: 5, test: function (S) { return S.liftTotal >= 20; } },
+  { id: 'lf50', cat: '夢想', name: '重訓老手', desc: '重量訓練累計打卡 50 次', coins: 10, test: function (S) { return S.liftTotal >= 50; } },
+  { id: 'lf100', cat: '夢想', name: '重訓百次', desc: '重量訓練累計打卡 100 次', coins: 20, test: function (S) { return S.liftTotal >= 100; } },
+  { id: 'cv50', cat: '夢想', name: '被動收入過半', desc: '被動收入覆蓋率達 50%（近 13 個月被動收入除以支出）', coins: 10, test: function (S) { return S.cov50; } },
+  { id: 'cv100', cat: '夢想', name: '被動收入打平', desc: '被動收入覆蓋率達 100%，被動收入已能支應支出', coins: 25, test: function (S) { return S.cov100; } },
+  { id: 'cv150', cat: '夢想', name: '被動收入有餘', desc: '被動收入覆蓋率達 150%', coins: 30, test: function (S) { return S.cov150; } },
   { id: 'c1', cat: '限時挑戰', name: '第一次挑戰成功', desc: '限時挑戰第一次成功', coins: 3, test: function (S) { return S.chTotal >= 1; } },
   { id: 'c10', cat: '限時挑戰', name: '挑戰十次', desc: '限時挑戰累計成功 10 次', coins: 8, test: function (S) { return S.chTotal >= 10; } },
   { id: 'c30', cat: '限時挑戰', name: '挑戰三十次', desc: '限時挑戰累計成功 30 次', coins: 15, test: function (S) { return S.chTotal >= 30; } },
@@ -707,6 +719,8 @@ function computeGame(data, today) {
   tasks.forEach(function (t) { byId[t.id] = t; });
   var logsBy = groupBy_(logs, 'date'), trainBy = groupBy_(train, 'date'), slipsBy = groupBy_(slips, 'date');
   var chBy = groupBy_(chs, 'date'), redBy = groupBy_(reds, 'date');
+  var workBy = groupBy_(data.workouts || [], 'date');
+  var covHits = parseDreamCovHits(settings.dreamCov);
 
   var first = '';
   function lower_(d) { if (d && (!first || d < first)) first = d; }
@@ -742,7 +756,8 @@ function computeGame(data, today) {
   var S = {
     streak: 0, perfectCount: 0, perfectStreak: 0, weekQual: 0, weekRun: 0, weekRunNow: 0, maxLevel: 1, minLevel: 1,
     trainTotal: 0, weekTrain: 0, runTotal: 0, runWeekNow: 0, test10k: false, plan12: false, chTotal: 0, chDay: 0,
-    cleanMax: 0, cleanCombo: 0, doneMax: 0, low: 0, glucose: 0, redCount: 0, early: false, fullDay: false, noLeave7: false
+    cleanMax: 0, cleanCombo: 0, doneMax: 0, low: 0, glucose: 0, redCount: 0, early: false, fullDay: false, noLeave7: false,
+    runLongest: 0, yogaTotal: 0, liftTotal: 0, cov50: false, cov100: false, cov150: false
   };
   var best = 0, qualifiedTotal = 0;
   var doneCount = {}, unlocked = {};
@@ -814,6 +829,7 @@ function computeGame(data, today) {
       doneCount[t.id] = (doneCount[t.id] || 0) + 1;
       if (l.tier === '最低') S.low++;
       if (/血糖/.test(t.name || '')) S.glucose++;
+      if (/重量訓練/.test(t.name || '')) S.liftTotal++;
       if (runIds[t.id]) { var mins = Number(l.minutes) || 0; S.runTotal += mins; weekRunMin += mins; }
       if (/晨間/.test(t.name || '') && l.ts && parseInt(String(l.ts).slice(11, 13), 10) < 6) S.early = true;
       var s = skillOf(t);
@@ -826,6 +842,14 @@ function computeGame(data, today) {
       if (daysBetween(trainStart, r.date) >= 77) S.plan12 = true;
     });
     sk['體能'].extra += Math.min(chOk, CHALLENGE_REWARDED_PER_DAY);
+    // Workouts the phone synced from the watch (see Health.gs). Same 20-minute floor as the auto-ticks.
+    (workBy[d] || []).forEach(function (wo) {
+      var mins = Number(wo.minutes) || 0;
+      if (mins < 20) return;
+      if (wo.type === '瑜伽') S.yogaTotal++;
+      if ((wo.type === '跑步' || wo.type === '跑步機') && mins > S.runLongest) S.runLongest = mins;
+    });
+    DREAM_COV_STEPS.forEach(function (st) { if (covHits[String(st)] && d >= covHits[String(st)]) S['cov' + st] = true; });
     S.chTotal += chOk;
     S.chDay = chOk;
     if (chOk) addCoins(d, 2 * Math.min(chOk, CHALLENGE_REWARDED_PER_DAY), '', '');
@@ -1465,3 +1489,72 @@ function mealAmount(o) {
 
 // The mirror's 3_每日餐費 has a two-row header whose four meal columns are all just 金額; 總額 is their sum.
 function mirrorMealAmount(o) { return isNum_(o['總額']) ? o['總額'] : 0; }
+
+// Pure helpers for the 夢想 page and the passive-income achievements. The data lives in the 「50夢想」 Google sheet
+// (tab 夢想清單: 編號, 主軸, 夢想, 狀態, 目標年份, 達成年份, 對應系統, 下一步, 自動進度); nothing here touches Sheets.
+
+var DREAM_STATUSES = ['未開始', '進行中', '已排定', '已達成'];
+var DREAM_COV_STEPS = [50, 100, 150];
+
+// rows: the sheet values including the header row. Blank rows and rows without a dream name are dropped.
+// progress is a fraction 0..1 or null when the sheet has no automatic figure for that dream.
+function parseDreams(rows) {
+  var items = [];
+  (rows || []).slice(1).forEach(function (r) {
+    var name = String(r[2] == null ? '' : r[2]).trim();
+    if (!name) return;
+    var status = String(r[3] == null ? '' : r[3]).trim();
+    if (DREAM_STATUSES.indexOf(status) < 0) status = '未開始';
+    var p = r[8] === '' || r[8] == null ? null : Number(r[8]);
+    items.push({
+      id: String(r[0] == null ? '' : r[0]).trim(), axis: String(r[1] == null ? '' : r[1]).trim() || '其他', name: name, status: status,
+      targetYear: String(r[4] == null ? '' : r[4]).trim(), doneYear: String(r[5] == null ? '' : r[5]).trim(),
+      source: String(r[6] == null ? '' : r[6]).trim(), next: String(r[7] == null ? '' : r[7]).trim(),
+      progress: p == null || !isFinite(p) ? null : Math.max(0, Math.min(1, p))
+    });
+  });
+  var axes = [], byAxis = {};
+  items.forEach(function (it) {
+    var a = byAxis[it.axis];
+    if (!a) { a = byAxis[it.axis] = { name: it.axis, total: 0, done: 0, planned: 0, doing: 0 }; axes.push(a); }
+    a.total++;
+    if (it.status === '已達成') a.done++;
+    else if (it.status === '已排定') a.planned++;
+    else if (it.status === '進行中') a.doing++;
+  });
+  var done = items.filter(function (it) { return it.status === '已達成'; }).length;
+  return { items: items, axes: axes, total: items.length, done: done };
+}
+
+// rows: the A:B values of the 進度 tab. Returns the 被動收入覆蓋率 as a fraction (1.131 = 113.1%), or null if the label is missing.
+function parseDreamCoverage(rows) {
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (String(rows[i][0] || '').trim() === '被動收入覆蓋率') {
+      var n = Number(rows[i][1]);
+      return isFinite(n) && rows[i][1] !== '' ? n : null;
+    }
+  }
+  return null;
+}
+
+// Stored as "50:2026-11-02,100:2026-11-02": the first day each coverage step was seen reached. Never removed, so an
+// achievement stays unlocked if the coverage later dips.
+function parseDreamCovHits(text) {
+  var hits = {};
+  String(text || '').split(',').forEach(function (p) {
+    var m = /^(\d+):(\d{4}-\d{2}-\d{2})$/.exec(p.trim());
+    if (m) hits[m[1]] = m[2];
+  });
+  return hits;
+}
+
+function dreamCovHits(text, coverage, today) {
+  var hits = parseDreamCovHits(text), changed = false;
+  if (coverage != null) {
+    DREAM_COV_STEPS.forEach(function (s) {
+      if (coverage * 100 >= s && !hits[String(s)]) { hits[String(s)] = today; changed = true; }
+    });
+  }
+  var value = DREAM_COV_STEPS.filter(function (s) { return hits[String(s)]; }).map(function (s) { return s + ':' + hits[String(s)]; }).join(',');
+  return { value: value, changed: changed };
+}

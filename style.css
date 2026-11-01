@@ -173,3 +173,5 @@ button.more { display: block; width: 100%; text-align: left; cursor: pointer; co
 .card.inactive { opacity: .55; }
 .bar > i.warn { background: #d98e04; }
 .bar > i.over { background: var(--warn); }
+
+.dream.done { opacity: .6; }

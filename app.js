@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-10-27 v11.1';
+  var VERSION = '2026-11-02 v12';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -13,7 +13,7 @@
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
   var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
-  var TABS = ['today', 'ledger', 'train', 'health', 'more', 'game', 'tasks', 'plan', 'settings'];
+  var TABS = ['today', 'ledger', 'train', 'health', 'more', 'game', 'dreams', 'tasks', 'plan', 'settings'];
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -31,6 +31,7 @@
   var state = {
     cfg: LS.get('habit.cfg', null),
     data: LS.get('habit.data', null),
+    dreams: LS.get('habit.dreams', null),
     queue: LS.get('habit.queue', []),
     tab: 'today',
     date: localDate(new Date()),
@@ -122,7 +123,7 @@
         state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
           library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [],
-          health: res.health || [], checkins: res.checkins || [], strengthMoves: res.strengthMoves || [], strength: res.strength || [], goalMap: res.goalMap || [] };
+          workouts: res.workouts || [], health: res.health || [], checkins: res.checkins || [], strengthMoves: res.strengthMoves || [], strength: res.strength || [], goalMap: res.goalMap || [] };
         state.rev++;
         LS.set('habit.data', state.data);
       });
@@ -173,7 +174,7 @@
   function gameData() {
     var d = state.data;
     return { tasks: d.tasks, logs: d.logs, leave: d.leave, train: dget('train'), slips: dget('slips'), slipItems: dget('slipItems'),
-      redemptions: dget('redemptions'), challenges: dget('challenges'), exempts: dget('exempts'), settings: d.settings || {} };
+      redemptions: dget('redemptions'), challenges: dget('challenges'), exempts: dget('exempts'), settings: d.settings || {}, workouts: dget('workouts') };
   }
 
   var gameCache = { rev: -1, today: '', g: null };
@@ -1072,18 +1073,20 @@
 
   // ---- 更多 (the pages that used to be separate tabs) ----
 
-  var SUB_PAGES = ['game', 'tasks', 'plan', 'settings'];
+  var SUB_PAGES = ['game', 'dreams', 'tasks', 'plan', 'settings'];
   function navTabOf(tab) { return SUB_PAGES.indexOf(tab) >= 0 ? 'more' : tab; }
 
   function goTab(tab) {
     state.tab = tab; state.editing = null; state.modal = null;
     if (tab === 'ledger') loadLedger();
+    if (tab === 'dreams') loadDreams();
     render(); window.scrollTo(0, 0);
   }
 
   function renderMore() {
     var items = [
       ['game', '🏅', '成就', '等級、星幣、成就、免責券'],
+      ['dreams', '🌠', '夢想', '50 夢想清單與自動進度（資料在「50夢想」試算表）'],
       ['tasks', '🗂', '任務', '新增、修改、排序、設定核心任務'],
       ['plan', '📅', '月/季', '三大目標、月回顧、月/季規劃'],
       ['settings', '⚙️', '設定', '連線、動畫、自評額外題目']
@@ -1588,6 +1591,52 @@
     return nodes;
   }
 
+  // ---- 夢想: read-only view of the 「50夢想」 sheet; statuses are edited in the sheet ----
+
+  function loadDreams() {
+    if (!state.cfg || state.dreamsLoading) return;
+    state.dreamsLoading = true; state.dreamsError = '';
+    api('dreams').then(function (res) {
+      state.dreams = res.dreams;
+      LS.set('habit.dreams', res.dreams);
+    }).catch(function (e) {
+      if (!e.network) state.dreamsError = e.message;
+    }).then(function () { state.dreamsLoading = false; if (state.tab === 'dreams') render(); });
+  }
+
+  function dreamRow(it) {
+    var done = it.status === '已達成';
+    var chip = done ? h('span', { class: 'chip on' }, '✓ 已達成' + (it.doneYear ? ' ' + it.doneYear : ''))
+      : it.status === '已排定' ? h('span', { class: 'chip' }, '預計 ' + (it.targetYear || '已排定'))
+      : it.status === '進行中' ? h('span', { class: 'chip on' }, '進行中') : null;
+    var pct = it.progress == null ? null : Math.round(it.progress * 100);
+    return h('div', { class: 'dream' + (done ? ' done' : ''), style: 'margin:8px 0' },
+      h('div', null, h('span', { class: 'muted' }, it.id + '　'), it.name, chip ? h('span', null, ' ', chip) : null),
+      pct != null && !done ? h('div', { class: 'row', style: 'align-items:center;gap:8px' }, h('div', { class: 'bar thin grow' }, h('i', { style: 'width:' + pct + '%' })), h('span', { class: 'muted' }, pct + '%')) : null,
+      it.next ? h('div', { class: 'muted' }, '下一步：' + it.next) : null);
+  }
+
+  function renderDreams() {
+    var D = state.dreams;
+    var nodes = [h('h1', null, '夢想')];
+    if (!D) {
+      nodes.push(h('p', { class: 'muted' }, state.dreamsError ? '讀不到夢想清單：' + state.dreamsError : '載入中…（第一次需要網路）'));
+      return nodes;
+    }
+    var pctAll = D.total ? Math.round(D.done / D.total * 100) : 0;
+    nodes.push(h('div', { class: 'card' },
+      h('div', { class: 'big' }, h('b', null, D.done), ' / ' + D.total + ' 已達成'),
+      h('div', { class: 'bar', style: 'margin:8px 0' }, h('i', { style: 'width:' + pctAll + '%' })),
+      D.coverage != null ? h('div', { class: 'muted' }, '被動收入覆蓋率 ' + Math.round(D.coverage * 100) + '%（近 13 個月被動收入 ÷ 支出，100% 表示能支應支出）') : null));
+    D.axes.forEach(function (a) {
+      nodes.push(h('h2', null, a.name + '　' + a.done + '/' + a.total));
+      nodes.push(h('div', { class: 'card' }, D.items.filter(function (it) { return it.axis === a.name; }).map(dreamRow)));
+    });
+    nodes.push(h('div', { class: 'row' }, h('p', { class: 'muted grow' }, '狀態、年份、下一步要到「50夢想」試算表改，這裡只讀。更新於 ' + (D.updated || '')),
+      h('button', { class: 'btn small', disabled: !!state.dreamsLoading, onclick: loadDreams }, state.dreamsLoading ? '更新中…' : '重新整理')));
+    return nodes;
+  }
+
   // ---- tasks ----
 
   function blankTask() {
@@ -1861,7 +1910,7 @@
     var tab = state.cfg ? state.tab : 'settings';
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
-    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
+    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'dreams' ? renderDreams() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
     var focusId = document.activeElement && document.activeElement.id;
     var keepY = window.scrollY;
     view.textContent = '';

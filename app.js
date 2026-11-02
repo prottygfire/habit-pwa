@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-02 v12';
+  var VERSION = '2026-11-02 v14.2';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -21,7 +21,7 @@
   };
 
   // Animation, vibration and sound switches. Animations ignore the system "reduce motion" setting on purpose.
-  var PREFS = Object.assign({ anim: true, vibrate: true, sound: false }, LS.get('habit.prefs', {}));
+  var PREFS = Object.assign({ anim: true, vibrate: true, sound: false, launch: true }, LS.get('habit.prefs', {}));
   function savePrefs() { LS.set('habit.prefs', PREFS); }
 
   function localDate(d) {
@@ -33,6 +33,7 @@
     data: LS.get('habit.data', null),
     dreams: LS.get('habit.dreams', null),
     queue: LS.get('habit.queue', []),
+    mutations: 0,   // bumped by every local change; a sync answer that started before the latest change is stale
     tab: 'today',
     date: localDate(new Date()),
     trainDate: localDate(new Date()),
@@ -86,11 +87,27 @@
   function api(action, payload) {
     var body = JSON.stringify(Object.assign({ secret: state.cfg.secret, action: action }, payload || {}));
     return fetch(state.cfg.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, redirect: 'follow' })
-      .then(function (r) { return r.json(); }, function () { var e = new Error('連不上伺服器'); e.network = true; throw e; })
+      .then(function (r) {
+        // Google sometimes answers with an HTML error page instead of JSON: that is a hiccup, not a bad request.
+        return r.json().catch(function () { var e = new Error('伺服器暫時沒回應'); e.transient = true; throw e; });
+      }, function () { var e = new Error('連不上伺服器'); e.network = true; throw e; })
       .then(function (res) {
-        if (!res.ok) { var e = new Error(res.error === 'unauthorized' ? '暗號不正確' : res.error); e.unauthorized = res.error === 'unauthorized'; throw e; }
+        if (!res.ok) {
+          var e = new Error(res.error === 'unauthorized' ? '暗號不正確' : res.error);
+          e.unauthorized = res.error === 'unauthorized';
+          e.transient = TRANSIENT_ERROR.test(String(res.error || ''));
+          throw e;
+        }
         return res;
       });
+  }
+
+  // Server-side hiccups (lock timeout while another job writes the sheet, quota, overload): the request is fine, so keep it queued and try again.
+  var TRANSIENT_ERROR = /lock|timeout|timed out|too many|try again|quota|server error|overload|service invoked|backend|暫時|逾時|忙碌/i;
+  var retryTimer = null;
+  function retryFlushLater() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(function () { retryTimer = null; flush().then(function () { if (state.tab === 'settings') render(); }); }, 15000);
   }
 
   var flushing = false;
@@ -107,7 +124,7 @@
       });
     }
     return next().catch(function (e) {
-      if (e.network) return;
+      if (e.network || e.transient) { retryFlushLater(); return; }   // nothing is dropped: the check-in stays queued and goes out on the next try
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; return; }
       state.queue.shift();
       LS.set('habit.queue', state.queue);
@@ -117,9 +134,14 @@
 
   function refresh() {
     if (!state.cfg) { render(); return Promise.resolve(); }
+    var stale = false;
     return flush().then(function () {
       if (state.queue.length) return;
+      var seq = state.mutations;
       return api('bootstrap').then(function (res) {
+        // You may have ticked something while this request was on its way: the answer was read before that change, so applying it
+        // would put the task back to unchecked. Drop it and sync again once the new change has been sent.
+        if (state.mutations !== seq || state.queue.length || flushing) { stale = true; return; }
         state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
           library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [],
@@ -129,11 +151,12 @@
       });
     }).catch(function (e) {
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; }
-      else if (!e.network) toast(e.message);
-    }).then(function () { render(); celebrate(); });
+      else if (!e.network && !e.transient) toast(e.message);
+    }).then(function () { render(); celebrate(); if (stale) setTimeout(refresh, 600); });
   }
 
   function enqueue(action, payload) {
+    state.mutations++;
     state.queue.push({ action: action, payload: payload });
     LS.set('habit.queue', state.queue);
     LS.set('habit.data', state.data);
@@ -406,6 +429,46 @@
     return modalShell(t.name, form);
   }
 
+  // 飲食狀態: tap = +1, tap again = +2, "−" takes one back (same feel as the 小失誤 buttons). 「普通」 and the others exclude each other.
+  function counterModal(m, c) {
+    var t = m.task, date = m.date, done = isDone(t, date, c.idx);
+    var labels = t.options.slice(1).map(function (o) { return parseOption(o).base; });
+    var counts = {};
+    parseNote(noteOn(t, date, c.idx)).forEach(function (p) { counts[p.base] = p.count > 0 ? p.count : 1; });
+    var row = h('div', { class: 'slips' });
+    function bump(label, delta) {
+      var n = Math.max(0, (counts[label] || 0) + delta);
+      if (label === DIET_PLAIN) { n = Math.min(n, 1); if (n) counts = {}; }
+      else if (n) delete counts[DIET_PLAIN];
+      if (n) counts[label] = n; else delete counts[label];
+      paint();
+    }
+    function paint() {
+      row.textContent = '';
+      labels.forEach(function (label) {
+        var n = counts[label] || 0, plain = label === DIET_PLAIN;
+        row.appendChild(h('div', { class: 'slip' + (n ? ' has' : '') },
+          h('button', { class: 'slipmain', type: 'button', 'aria-label': (plain ? '選 ' : '加一 ') + label, onclick: function () { bump(label, plain && n ? -1 : 1); } },
+            label, n && !plain ? h('b', null, ' ×' + n) : n ? h('b', null, ' ✓') : null),
+          n && !plain ? h('button', { class: 'slipundo', type: 'button', 'aria-label': '少一 ' + label, onclick: function () { bump(label, -1); } }, '−') : null));
+      });
+    }
+    paint();
+    function save() {
+      var items = labels.filter(function (l) { return counts[l]; }).map(function (l) { return l === DIET_PLAIN ? l : noteItem(l, counts[l]); });
+      if (!items.length) { toast('請至少按一項，或選「普通」'); return; }
+      state.modal = null; renderModal();
+      checkTask(t, date, '標準', items.join('、'));
+    }
+    return modalShell(t.name, h('div', null,
+      h('p', { class: 'muted' }, '這餐有什麼就按一下（按兩下算 2，「−」減少）；沒有特別的就按「普通」。'),
+      row,
+      h('div', { class: 'row', style: 'margin-top:14px' },
+        h('button', { class: 'btn primary grow', type: 'button', onclick: save }, done ? '更新' : '完成'),
+        done ? h('button', { class: 'btn danger', type: 'button', onclick: function () { closeModal(); uncheckTask(t, date); } }, '取消完成') : null,
+        h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉'))));
+  }
+
   function tierModal(m, c) {
     var t = m.task, date = m.date, cur = tierOn(t, date, c.idx);
     function choice(tier, text) {
@@ -476,7 +539,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
+    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -494,7 +557,8 @@
     if (done && tier && tier !== '標準') sub.push(h('span', { class: 'chip on' }, tier));
     if (streak > 0) sub.push(h('span', { class: 'muted' }, '🔥' + streak + '天'));
     var tap = function () {
-      if (hasOptions(t)) { state.modal = { type: 'options', task: t, date: date }; renderModal(); }
+      if (isCounterTask(t)) { state.modal = { type: 'counter', task: t, date: date }; renderModal(); }
+      else if (hasOptions(t)) { state.modal = { type: 'options', task: t, date: date }; renderModal(); }
       else if (done) uncheckTask(t, date);
       else checkTask(t, date, '標準', '');
     };
@@ -564,6 +628,19 @@
         h('div', { class: 'muted' }, '必做 ' + st.done + '/' + st.due + (bs.due ? '・加分 ' + bs.done + '/' + bs.due : '') + '（必做完成 ≥ 80% 才算連續一天）')),
       h('button', { class: 'btn small' + (onLeave ? ' primary' : ''), onclick: function () { toggleLeave(date, !onLeave); } }, onLeave ? '已請假（點一下取消）' : '這天請假（不影響連續天數）')
     ];
+    if (isToday) {
+      var pending = backfillPending(c.tasks, date, c.idx, c.leave);
+      if (pending.length) {
+        nodes.splice(2, 0, h('div', { class: 'card backfill' },
+          h('div', { class: 'muted' }, '🕘 這兩天還有可以補登的（晚一點補也一樣算，連續天數會先保留）'),
+          h('div', { class: 'row', style: 'margin-top:8px;flex-wrap:wrap' }, pending.slice().reverse().map(function (p) {
+            return h('button', { class: 'btn small', type: 'button', onclick: function () { state.date = p.date; render(); } },
+              (p.date === addDays(date, -1) ? '昨天' : '前天') + ' ' + p.left + ' 項');
+          }))));
+      }
+    } else if (daysBetween(date, today()) <= GRACE_DAYS && !onLeave) {
+      nodes.push(h('p', { class: 'muted' }, '這天可以補登：補的點數和當天打勾完全一樣。'));
+    }
     if (onLeave) nodes.push(h('p', { class: 'muted' }, '請假日不提醒，也不計入完成率。'));
     if (!onLeave) nodes.push(dayStateBar(date));
     groupBySlot(daily, c, date, nodes);
@@ -1730,7 +1807,7 @@
     if (state.editing) return [h('h1', null, state.editing.id ? '編輯任務' : '新增任務'), renderTaskForm(state.editing)];
     var nodes = [h('div', { class: 'row' }, h('h1', { class: 'grow' }, '任務'), h('button', { class: 'btn primary', onclick: function () { state.editing = blankTask(); render(); } }, '＋ 新增'))];
     state.data.tasks.forEach(function (t, i, all) {
-      var extras = (hasOptions(t) ? '・' + t.options.length + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
+      var extras = (hasOptions(t) ? '・' + (t.options.length - (isCounterTask(t) ? 1 : 0)) + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
       function move(dir) { api('moveTask', { id: t.id, dir: dir }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能調整順序' : e.message); }); }
       nodes.push(h('div', { class: 'card item ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
         h('div', null, nameLine(t),
@@ -1786,20 +1863,23 @@
   }
 
   function renderHistory() {
-    var rows = state.data.history;
+    var rows = historyWithAuto(state.data.history || [], state.data, today());
     if (!rows.length) return [];
-    var months = [], items = [], cell = {};
+    var months = [], items = [], cell = {}, auto = {};
     rows.forEach(function (r) {
       if (months.indexOf(r.month) < 0) months.push(r.month);
       if (items.indexOf(r.item) < 0) items.push(r.item);
       cell[r.month + '|' + r.item] = r.count;
+      if (r.auto) auto[r.month + '|' + r.item] = true;
     });
     months.sort();
-    return [h('h2', null, '歷史對照（2026 月統計，來自舊紀錄）'),
+    var ORDER = ['有氧', '重訓', '瑜珈', '飲酒', '閱讀', '閱讀（天）', '❤️', '練車', '炸物', '飲食分'];
+    items.sort(function (a, b) { var x = ORDER.indexOf(a), y = ORDER.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+    return [h('h2', null, '歷史對照（' + HISTORY_FROM.slice(5) + ' 月起由 App 自動計算）'),
       h('div', { class: 'card scroll' }, h('table', null,
         h('thead', null, h('tr', null, [h('th', null, '')].concat(months.map(function (m) { return h('th', null, m.slice(5) + '月'); })))),
         h('tbody', null, items.map(function (it) {
-          return h('tr', null, [h('td', null, it)].concat(months.map(function (m) { var v = cell[m + '|' + it]; return h('td', null, v === undefined ? '' : v); })));
+          return h('tr', null, [h('td', null, it)].concat(months.map(function (m) { var v = cell[m + '|' + it]; return h('td', { class: auto[m + '|' + it] ? 'auto' : '' }, v === undefined ? '' : v); })));
         }))))];
   }
 
@@ -1845,6 +1925,14 @@
     nodes.push(h('div', { class: 'card' },
       h('div', null, '進階 ', h('b', null, x.advanced), ' 次・加分 ', h('b', null, x.bonus), ' 次'),
       names.length ? h('div', { style: 'margin-top:8px' }, names.map(function (n) { return h('span', { class: 'chip on' }, n + ' ' + x.options[n] + ' 天' + (x.reps[n] ? '・共 ' + x.reps[n] : '')); })) : h('div', { class: 'muted' }, '飯後運動等有選項的任務，勾選的動作會在這裡累計。')));
+    var dp = dietPeriod(c.tasks, c.logs, range.start, range.end < t0 ? range.end : t0);
+    if (c.tasks.some(function (t) { return dietMealOf(t); })) {
+      nodes.push(h('h2', null, '飲食狀態'));
+      nodes.push(h('div', { class: 'card' }, dp.days
+        ? [h('div', null, '有記錄 ', h('b', null, dp.days), ' 天・飲食分 ', h('b', null, dp.score100), '（日均 ', dp.avgDaily, ' / 16）'),
+           h('div', { style: 'margin-top:8px' }, DIET_NEG.concat(DIET_POS).map(function (e) { return h('span', { class: 'chip' + (dp.totals[e] ? ' on' : '') }, e + ' ' + dp.totals[e] + ' 次・' + dp.dayCounts[e] + ' 天'); }))]
+        : h('div', { class: 'muted' }, '在今日頁點「早餐飲食」等任務記錄每餐狀況，這裡會匯整飲食分與各項次數。')));
+    }
     var trend = dailyRates(c.tasks, range.start, range.end < t0 ? range.end : t0, c.idx, c.leave);
     nodes.push(h('h2', null, '每日必做完成率趨勢'));
     nodes.push(h('div', { class: 'card' }, h('div', { class: 'trend', role: 'img', 'aria-label': '每日完成率趨勢' }, trend.map(function (r) {
@@ -1878,7 +1966,7 @@
         return h('label', { class: 'row f' }, h('input', { type: 'checkbox', checked: !!PREFS[key], onchange: function (ev) { PREFS[key] = ev.target.checked; savePrefs(); } }), h('span', null, ' ' + label, h('span', { class: 'muted' }, hint ? '　' + hint : '')));
       };
       nodes.push(h('h2', null, '回饋'));
-      nodes.push(h('div', { class: 'card' }, sw('anim', '完成動畫', '不受系統「減少動態效果」影響'), sw('vibrate', '震動'), sw('sound', '提示音')));
+      nodes.push(h('div', { class: 'card' }, sw('anim', '完成動畫', '不受系統「減少動態效果」影響'), sw('vibrate', '震動'), sw('sound', '提示音'), sw('launch', '開機訓練提醒', '打開 App 時顯示約 2.5 秒今日訓練，做完就不跳')));
     }
     if (state.cfg && state.data) {
       var extraIn = h('input', { type: 'text', id: 's-extra', value: (state.data.settings || {}).checkinExtra || '', maxlength: '40', placeholder: '例如：晨間狀態,專注（用逗號分隔，最多 4 個）' });
@@ -1930,15 +2018,36 @@
   });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.modal) closeModal(); });
   window.addEventListener('online', refresh);
+  var hiddenAt = 0;
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) return;
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (hiddenAt && Date.now() - hiddenAt > 10 * 60 * 1000) setTimeout(showLaunchReminder, 300);   // came back after a while: same as opening the app
     if (state.openedOn !== today()) { state.openedOn = today(); state.date = today(); state.trainDate = today(); }
     state.date = state.date > today() ? today() : state.date;
     refresh();
   });
   if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(function () { /* offline shell is optional */ });
 
+  // ---- 開機訓練提醒: about 2.5 seconds, tap to close; not shown when today's training is all done ----
+  function showLaunchReminder() {
+    if (!PREFS.launch || !state.cfg || !state.data || document.getElementById('launch')) return;
+    var start = state.data.settings && state.data.settings.trainStart;
+    if (!start) return;
+    var items = trainingReminder(today(), start, dget('train'));
+    if (!items.length) return;
+    var lines = items.map(function (it) { return h('div', { class: 'li' }, (it.icon || '•') + ' ' + it.title + (it.minutes ? '　' + it.minutes + ' 分' : '')); });
+    var c = ctx(), early = c.tasks.filter(function (t) { return /晨間/.test(t.name || '') && isScheduled(t, today()); })[0];
+    if (weekdayOf(today()) >= 6 && early && !isDone(early, today(), c.idx) && new Date().getHours() < WEEKEND_EARLY_HOUR) {
+      lines.push(h('div', { class: 'li muted' }, '☀️ 假日早鳥：' + WEEKEND_EARLY_HOUR + ' 點前完成晨間鍛鍊 +' + WEEKEND_EARLY_COINS + ' ⭐'));
+    }
+    var box = h('div', { id: 'launch', class: 'launch', role: 'status', onclick: closeLaunch }, h('div', { class: 'launchbox' }, h('b', null, '今天的訓練'), lines));
+    function closeLaunch() { if (box.parentNode) box.parentNode.removeChild(box); }
+    document.body.appendChild(box);
+    setTimeout(closeLaunch, 2500);
+  }
+
   render();
+  showLaunchReminder();
   if (location.hash === '#accum') setTimeout(function () { var el = document.getElementById('accum'); if (el) el.scrollIntoView(); }, 300);
   refresh();
 }());

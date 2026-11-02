@@ -175,3 +175,9 @@ button.more { display: block; width: 100%; text-align: left; cursor: pointer; co
 .bar > i.over { background: var(--warn); }
 
 .dream.done { opacity: .6; }
+.launch { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .35); animation: launchfade 2.5s ease forwards; }
+.launchbox { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 22px; max-width: 86vw; box-shadow: 0 8px 30px rgba(0, 0, 0, .35); }
+.launchbox .li { margin-top: 8px; }
+.backfill { border-color: var(--accent); }
+td.auto { font-weight: 600; }
+@keyframes launchfade { 0% { opacity: 0; } 12% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; } }

@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js and dreams.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js and history.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -8,6 +8,7 @@
 var COUNT_FREQS = ['weekly_n', 'monthly_n', 'quarterly_n'];
 var MIN_FREQS = ['weekly_min', 'monthly_min'];
 var OVERALL_THRESHOLD = 0.8;
+var GRACE_DAYS = 2;   // a day left unfinished is only "missed" once it is more than this many days old: late entries are fine
 var LOOKBACK_DAYS = 400;
 var LOOKBACK_PERIODS = 60;
 
@@ -228,7 +229,7 @@ function bonusStats(tasks, date, idx) {
   var due = 0, done = 0;
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    if (!isBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, date)) continue;
+    if (!isBonus(t) || isCounterTask(t) || isAccumFreq(t.freq) || !isScheduled(t, date)) continue;
     due++;
     if (isDone(t, date, idx)) done++;
   }
@@ -249,26 +250,33 @@ function taskStreak(task, date, idx, leave) {
     return n;
   }
   var d = date;
-  if (isScheduled(task, d) && !leave[d] && !isWaived(task, d, idx) && !isDone(task, d, idx)) d = addDays(d, -1);
   for (i = 0; i < LOOKBACK_DAYS; i++, d = addDays(d, -1)) {
     if (leave[d] || !isScheduled(task, d) || isWaived(task, d, idx)) continue;
     if (isDone(task, d, idx)) n++;
-    else break;
+    else if (daysBetween(d, date) > GRACE_DAYS) break;
   }
   return n;
 }
 
 function overallStreak(tasks, date, idx, leave) {
   var n = 0, d = date;
-  var today = dayStats(tasks, d, idx, leave);
-  if (today.rate !== null && today.rate < OVERALL_THRESHOLD) d = addDays(d, -1);
   for (var i = 0; i < LOOKBACK_DAYS; i++, d = addDays(d, -1)) {
     var s = dayStats(tasks, d, idx, leave);
     if (s.rate === null) continue;
     if (s.rate >= OVERALL_THRESHOLD) n++;
-    else break;
+    else if (daysBetween(d, date) > GRACE_DAYS) break;
   }
   return n;
+}
+
+// 補登卡: the 必做 tasks still open on the last GRACE_DAYS days (newest first is not needed: oldest first), [{date, left}].
+function backfillPending(tasks, today, idx, leave) {
+  var out = [];
+  for (var i = GRACE_DAYS; i >= 1; i--) {
+    var d = addDays(today, -i), s = dayStats(tasks, d, idx, leave);
+    if (!s.leave && s.due > s.done) out.push({ date: d, left: s.due - s.done });
+  }
+  return out;
 }
 
 // Per-dimension completion of 必做 fixed tasks over [start, min(end, today)].
@@ -314,7 +322,7 @@ function periodExtras(tasks, logs, start, end) {
   var out = { advanced: 0, bonus: 0, options: {}, reps: {} };
   for (i = 0; i < logs.length; i++) {
     var l = logs[i], t = byId[l.taskId];
-    if (l.date < start || l.date > end || !t) continue;
+    if (l.date < start || l.date > end || !t || isCounterTask(t)) continue;  // 飲食狀態 has its own summary (dietPeriod)
     if (l.tier === '進階') out.advanced++;
     if (isBonus(t) && !isAccumFreq(t.freq)) out.bonus++;
     parseNote(l.note).forEach(function (p) {
@@ -501,6 +509,15 @@ function trainingWeekLoad(date, start) {
   return out;
 }
 
+// 開機提醒: the training items of `date` that are not logged yet, without the pelvic-floor one ([] before the plan starts, after it ends, or once everything is done).
+function trainingReminder(date, start, trainLogs) {
+  var menu = trainingMenu(date, start);
+  if (!menu.started || menu.finished) return [];
+  var done = {};
+  (trainLogs || []).forEach(function (r) { if (r.date === date) done[r.item] = true; });
+  return menu.items.filter(function (it) { return !done[it.id] && it.id !== 'pelvic'; });   // the pelvic-floor item stays off a screen others may see (same rule as Telegram)
+}
+
 // What to show for an item given today's state (精神好 / 普通 / 疲勞).
 function trainVariant(item, state) {
   if (state === '疲勞' && item.easy) return { label: '輕鬆版', text: item.easy };
@@ -571,6 +588,8 @@ var SKILL_TITLES = {
 // Extra star coins when a skill reaches one of these levels (on top of the +5 every level gives).
 var TIER_PROMO = { 4: 10, 7: 20, 10: 40, 15: 80, 20: 150 };
 var STREAK_COINS = { 7: 10, 14: 20, 30: 40, 60: 80, 100: 150 };
+var WEEKEND_EARLY_HOUR = 12;    // 假日早鳥: weekend morning workout before this hour
+var WEEKEND_EARLY_COINS = 4;    // on top of the usual 2 for a qualified day
 var TOTAL_TITLES = ['新手', '起步者', '穩定者', '前進者', '實踐者', '行動家', '磨練者', '達人', '名家', '宗師', '圓滿'];
 var GAME_LOOKBACK_DAYS = 800;
 var CHALLENGE_DRAWS_PER_DAY = 3;
@@ -685,6 +704,9 @@ var ACHIEVEMENTS = [
   { id: 'low10', cat: '習慣養成', name: '再累也有做', desc: '用「最低版」守住習慣累計 10 次', coins: 8, test: function (S) { return S.low >= 10; } },
   { id: 'glu30', cat: '習慣養成', name: '血糖守護', desc: '血糖措施累計完成 30 次', coins: 8, test: function (S) { return S.glucose >= 30; } },
   { id: 'r1', cat: '犒賞', name: '犒賞自己', desc: '第一次兌換獎勵', coins: 3, test: function (S) { return S.redCount >= 1; } },
+  { id: 'we2', cat: '假日', name: '假日早起', desc: '連續 2 個假日早上 12 點前完成晨間鍛鍊', coins: 5, test: function (S) { return S.weekendRun >= 2; } },
+  { id: 'we4', cat: '假日', name: '假日不賴床', desc: '連續 4 個假日早上 12 點前完成晨間鍛鍊', coins: 10, test: function (S) { return S.weekendRun >= 4; } },
+  { id: 'we8', cat: '假日', name: '假日戰士', desc: '連續 8 個假日早上 12 點前完成晨間鍛鍊', coins: 20, test: function (S) { return S.weekendRun >= 8; } },
   { id: 'hid1', cat: '隱藏', hidden: true, name: '早鳥', desc: '早上 6 點前完成晨間鍛鍊', coins: 5, test: function (S) { return S.early; } },
   { id: 'hid2', cat: '隱藏', hidden: true, name: '滿分一天', desc: '一天內必做和加分全部完成', coins: 8, test: function (S) { return S.fullDay; } },
   { id: 'hid3', cat: '隱藏', hidden: true, name: '七天全勤', desc: '連續 7 天達標，而且沒用請假日', coins: 8, test: function (S) { return S.noLeave7; } }
@@ -757,7 +779,7 @@ function computeGame(data, today) {
     streak: 0, perfectCount: 0, perfectStreak: 0, weekQual: 0, weekRun: 0, weekRunNow: 0, maxLevel: 1, minLevel: 1,
     trainTotal: 0, weekTrain: 0, runTotal: 0, runWeekNow: 0, test10k: false, plan12: false, chTotal: 0, chDay: 0,
     cleanMax: 0, cleanCombo: 0, doneMax: 0, low: 0, glucose: 0, redCount: 0, early: false, fullDay: false, noLeave7: false,
-    runLongest: 0, yogaTotal: 0, liftTotal: 0, cov50: false, cov100: false, cov150: false
+    runLongest: 0, yogaTotal: 0, liftTotal: 0, cov50: false, cov100: false, cov150: false, weekendRun: 0
   };
   var best = 0, qualifiedTotal = 0;
   var doneCount = {}, unlocked = {};
@@ -804,11 +826,11 @@ function computeGame(data, today) {
       if (weekQual === 5) addCoins(d, 5, 'week', '這週已達標 5 天');
       if (monthQual === 10) addCoins(d, 10, 'month', monthKey(d) + ' 達標滿 10 天');
       if (monthQual === 20) addCoins(d, 25, 'month', monthKey(d) + ' 達標滿 20 天');
-    } else if (!onLeave && st.due > 0 && !isToday) {
+    } else if (!onLeave && st.due > 0 && daysBetween(d, today) > GRACE_DAYS) {
       S.streak = 0;
     }
     if (perfect) { S.perfectCount++; S.perfectStreak++; }
-    else if (!onLeave && st.due > 0 && !isToday) S.perfectStreak = 0;
+    else if (!onLeave && st.due > 0 && daysBetween(d, today) > GRACE_DAYS) S.perfectStreak = 0;
 
     // ---- skill points ----
     var sk = {};
@@ -825,7 +847,7 @@ function computeGame(data, today) {
     var chOk = dayCh.filter(function (c) { return c.result === '成功'; }).length;
     dayLogs.forEach(function (l) {
       var t = byId[l.taskId];
-      if (!t) return;
+      if (!t || isCounterTask(t)) return;
       doneCount[t.id] = (doneCount[t.id] || 0) + 1;
       if (l.tier === '最低') S.low++;
       if (/血糖/.test(t.name || '')) S.glucose++;
@@ -896,13 +918,23 @@ function computeGame(data, today) {
       S.cleanCombo = fry && booze ? Math.min(cleanStreak[fry], cleanStreak[booze]) : 0;
     }
 
+    // ---- 假日早鳥: a weekend morning workout logged on that same day before noon (a late backfill is fine, it just earns no bonus) ----
+    if (weekdayOf(d) >= 6 && !onLeave) {
+      var weekendEarly = dayLogs.some(function (l) {
+        var t = byId[l.taskId];
+        return t && /晨間/.test(t.name || '') && l.ts && String(l.ts).slice(0, 10) === d && parseInt(String(l.ts).slice(11, 13), 10) < WEEKEND_EARLY_HOUR;
+      });
+      if (weekendEarly) { S.weekendRun++; addCoins(d, WEEKEND_EARLY_COINS, 'weekend', '假日早鳥：' + WEEKEND_EARLY_HOUR + ' 點前完成晨間鍛鍊'); }
+      else if (d !== today) S.weekendRun = 0;
+    }
+
     // ---- redemptions and hidden conditions ----
     var dayReds = redBy[d] || [];
     dayReds.forEach(function (r) { S.redCount++; spent += Number(r.cost) || 0; });
     if (perfect) {
       var bonusDue = 0, bonusDone = 0;
       tasks.forEach(function (t) {
-        if (!isBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, d)) return;
+        if (!isBonus(t) || isCounterTask(t) || isAccumFreq(t.freq) || !isScheduled(t, d)) return;
         bonusDue++;
         if (isDone(t, d, idx)) bonusDone++;
       });
@@ -1557,4 +1589,141 @@ function dreamCovHits(text, coverage, today) {
   }
   var value = DREAM_COV_STEPS.filter(function (s) { return hits[String(s)]; }).map(function (s) { return s + ':' + hits[String(s)]; }).join(',');
   return { value: value, changed: changed };
+}
+
+// 飲食狀態: four tap-counter tasks (早餐飲食 .. 消夜飲食) record what each meal contained. The score rules are the ones the old sheet
+// 3_每日餐費 used (formulas E/H/K/N), minus 🏋 (exercise is logged on its own). Pure helpers; concatenated after dreams.js by build.py.
+
+var DIET_MEALS = ['早餐', '午餐', '晚餐', '消夜'];
+var DIET_NEG = ['🥤', '🍟', '🍷', '🍩'];
+var DIET_POS = ['🥗', '🥬', '🍎'];
+var DIET_PLAIN = '普通（沒有特別狀況）';
+var DIET_MARK = '#計數';   // first option line: this task uses the tap-counter window instead of the number inputs
+var DIET_OPTIONS = [DIET_MARK, '🥤含糖飲料', '🍟炸物', '🍷酒', '🍩甜點', '🥗健康餐', '🥬足量蔬菜', '🍎水果', DIET_PLAIN];
+
+function isCounterTask(t) { return !!(t && t.options && t.options.length && t.options[0] === DIET_MARK); }
+
+// '午餐飲食' -> '午餐'; any other task -> null.
+function dietMealOf(t) {
+  var name = t && t.name ? String(t.name) : '';
+  for (var i = 0; i < DIET_MEALS.length; i++) if (name === DIET_MEALS[i] + '飲食') return DIET_MEALS[i];
+  return null;
+}
+
+// Note like '🥤含糖飲料*2、🍟炸物' -> {'🥤': 2, '🍟': 1, ...}; an item without *N counts once.
+function dietCounts(note) {
+  var out = {};
+  DIET_NEG.concat(DIET_POS).forEach(function (e) { out[e] = 0; });
+  parseNote(note).forEach(function (p) {
+    DIET_NEG.concat(DIET_POS).forEach(function (e) {
+      if (p.base.indexOf(e) === 0) out[e] += p.count > 0 ? p.count : 1;
+    });
+  });
+  return out;
+}
+
+function dietClamp_(lo, hi, x) { return Math.max(lo, Math.min(hi, x)); }
+
+// 早/午/晚: 3 - bad + good, 0..5. 消夜: 1 - bad + good, -2..2 (an unlogged 消夜 is "didn't eat", worth +1: see dietDay).
+function dietMealScore(meal, note) {
+  var c = dietCounts(note), delta = 0;
+  DIET_NEG.forEach(function (e) { delta -= c[e]; });
+  DIET_POS.forEach(function (e) { delta += c[e]; });
+  return meal === '消夜' ? dietClamp_(-2, 2, 1 + delta) : dietClamp_(0, 5, 3 + delta);
+}
+
+// Logged meals of one day, or null when none of the four was logged.
+function dietDay(tasks, logs, date) {
+  var mealOf = {}, i;
+  for (i = 0; i < tasks.length; i++) { var m = dietMealOf(tasks[i]); if (m) mealOf[tasks[i].id] = m; }
+  var notes = {};
+  for (i = 0; i < logs.length; i++) {
+    var l = logs[i];
+    if (l.date === date && mealOf[l.taskId] && String(l.note || '').trim()) notes[mealOf[l.taskId]] = l.note;
+  }
+  var logged = DIET_MEALS.filter(function (x) { return notes[x] !== undefined; });
+  if (!logged.length) return null;
+  var total = 0, counts = dietCounts('');
+  DIET_MEALS.forEach(function (x) {
+    if (notes[x] !== undefined) {
+      total += dietMealScore(x, notes[x]);
+      var c = dietCounts(notes[x]);
+      Object.keys(c).forEach(function (e) { counts[e] += c[e]; });
+    } else if (x === '消夜') total += 1;
+  });
+  return { date: date, logged: logged, total: total, counts: counts };
+}
+
+// Month/quarter numbers. avgDaily: mean day total; score100: the same on a 0..100 scale (16 is the best possible day), which is the figure the old OneNote 飲食分 held.
+function dietPeriod(tasks, logs, start, end) {
+  var out = { days: 0, avgDaily: null, score100: null, totals: dietCounts(''), dayCounts: dietCounts('') }, sum = 0;
+  for (var d = start; d <= end; d = addDays(d, 1)) {
+    var day = dietDay(tasks, logs, d);
+    if (!day) continue;
+    out.days++; sum += day.total;
+    Object.keys(day.counts).forEach(function (e) {
+      out.totals[e] += day.counts[e];
+      if (day.counts[e] > 0) out.dayCounts[e]++;
+    });
+  }
+  if (out.days) {
+    out.avgDaily = Math.round(sum / out.days * 100) / 100;
+    out.score100 = Math.round(sum / out.days / 16 * 1000) / 10;
+  }
+  return out;
+}
+
+// 歷史對照: months before HISTORY_FROM are the hand-written numbers of the 「歷史月統計」 tab; from HISTORY_FROM on, the same kind of
+// numbers are worked out from the app's own records (training tab, task check-ins, 小失誤, 飲食狀態). Pure helpers; concatenated by build.py.
+
+var HISTORY_FROM = '2026-11';
+
+// Training-menu item id -> the history row it counts toward; warm-up style items (core, pelvic, hip, walk) count for nothing.
+function trainKindOf(item) {
+  item = String(item || '');
+  if (item.indexOf('run') === 0 || item === 'test10k') return '有氧';
+  if (item.indexOf('strength') === 0 || item.indexOf('home-') === 0 || item === 'kb-interval') return '重訓';
+  if (item === 'yoga') return '瑜珈';
+  return null;
+}
+
+function addDates_(set, date) { set[date] = true; }
+function size_(set) { return Object.keys(set).length; }
+
+// data: {tasks, logs, train, slips, slipItems}. Days in `ym` per row, or null when the app has nothing for that month.
+function monthAutoStats(data, ym) {
+  var tasks = data.tasks || [], logs = data.logs || [], train = data.train || [], slips = data.slips || [], slipItems = data.slipItems || [];
+  var inMonth = function (r) { return monthKey(r.date) === ym; };
+  var any = logs.some(inMonth) || train.some(inMonth) || slips.some(inMonth);
+  if (!any) return null;
+  var days = { '有氧': {}, '重訓': {}, '瑜珈': {}, '飲酒': {}, '閱讀（天）': {} }, byId = {};
+  tasks.forEach(function (t) { byId[t.id] = t; });
+  train.filter(inMonth).forEach(function (r) { var k = trainKindOf(r.item); if (k) addDates_(days[k], r.date); });
+  logs.filter(inMonth).forEach(function (l) {
+    var t = byId[l.taskId];
+    if (!t) return;
+    var name = t.name || '';
+    if (t.freq === 'weekly_min' && /跑|Zone 2/.test(name)) addDates_(days['有氧'], l.date);
+    if (/重量訓練/.test(name)) addDates_(days['重訓'], l.date);
+    if (name === '閱讀') addDates_(days['閱讀（天）'], l.date);
+  });
+  var boozeIds = {};
+  slipItems.forEach(function (i) { if (i.name === '飲酒') boozeIds[i.id] = true; });
+  slips.filter(inMonth).forEach(function (s) { if (boozeIds[s.item]) addDates_(days['飲酒'], s.date); });
+  var out = {};
+  Object.keys(days).forEach(function (k) { out[k] = size_(days[k]); });
+  var dp = dietPeriod(tasks, logs, ym + '-01', ym + '-' + (daysInMonth_(ym) < 10 ? '0' : '') + daysInMonth_(ym));
+  if (dp.days) { out['炸物'] = dp.totals['🍟']; out['飲食分'] = dp.score100; }
+  return out;
+}
+
+// oldRows: [{month, item, count}] from the tab. Adds one row per item for every month from HISTORY_FROM up to today's month that has app data.
+function historyWithAuto(oldRows, data, today) {
+  var rows = (oldRows || []).slice(), last = monthKey(today);
+  for (var ym = HISTORY_FROM; ym <= last; ym = monthKey(addDays(ym + '-28', 4))) {
+    var m = monthAutoStats(data, ym);
+    if (!m) continue;
+    Object.keys(m).forEach(function (item) { rows.push({ month: ym, item: item, count: m[item], auto: true }); });
+  }
+  return rows;
 }

@@ -181,3 +181,9 @@ button.more { display: block; width: 100%; text-align: left; cursor: pointer; co
 .backfill { border-color: var(--accent); }
 td.auto { font-weight: 600; }
 @keyframes launchfade { 0% { opacity: 0; } 12% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; } }
+.slothead { display: flex; align-items: center; justify-content: space-between; }
+.slotcount { font-size: .8125rem; font-weight: 500; }
+.slotcount.full { color: var(--accent); }
+.cal.mini { gap: 3px; margin: 8px 0; }
+.cal.mini i { height: 22px; font-size: .6875rem; border-radius: 6px; }
+.cal.mini i.rest { opacity: .35; }

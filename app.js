@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-03 v15';
+  var VERSION = '2026-11-03 v17';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -132,9 +132,10 @@
     }).then(function () { flushing = false; });
   }
 
-  function refresh() {
+  // quiet = background poll: draw again only when the server data really differs from what is on screen.
+  function refresh(quiet) {
     if (!state.cfg) { render(); return Promise.resolve(); }
-    var stale = false;
+    var stale = false, changed = true;
     return flush().then(function () {
       if (state.queue.length) return;
       var seq = state.mutations;
@@ -143,17 +144,20 @@
         // would put the task back to unchecked. Drop it and sync again once the new change has been sent.
         if (state.mutations !== seq || state.queue.length || flushing) { stale = true; return; }
         var keepLedger = state.data && state.data.ledger;
+        var before = quiet === true && state.data ? JSON.stringify(Object.assign({}, state.data, { ledger: null })) : '';
         state.data = { ledger: keepLedger, tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
           library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [],
           workouts: res.workouts || [], health: res.health || [], checkins: res.checkins || [], strengthMoves: res.strengthMoves || [], strength: res.strength || [], goalMap: res.goalMap || [] };
+        changed = !before || before !== JSON.stringify(Object.assign({}, state.data, { ledger: null }));
         state.rev++;
         LS.set('habit.data', state.data);
       });
     }).catch(function (e) {
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; }
       else if (!e.network && !e.transient) toast(e.message);
-    }).then(function () { render(); celebrate(); if (stale) setTimeout(refresh, 600); else if (state.data && state.cfg && state.tab !== 'ledger') loadLedger(); });
+      else changed = false;
+    }).then(function () { if (quiet === true && !changed && !stale) return; render(); celebrate(); if (stale) setTimeout(refresh, 600); else if (state.data && state.cfg && state.tab !== 'ledger') loadLedger(); });
   }
 
   function enqueue(action, payload) {
@@ -174,6 +178,43 @@
   function ctx() {
     var d = state.data;
     return { tasks: d.tasks, logs: d.logs, idx: indexLogs(d.logs, d.exempts || [], extras()), leave: indexLeave(d.leave) };
+  }
+
+  // ---- borrowed from MyRoutine: cue text, per-habit totals and milestones, new-habit hint ----
+
+  // 情境提示 ("上班路上", "飯後"...): kept as JSON {taskId: text} in the 設定 sheet under taskCues.
+  function cuesOf() {
+    try { var o = JSON.parse((state.data && state.data.settings && state.data.settings.taskCues) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; }
+  }
+
+  // How many different days each task has been checked, cached per data revision.
+  var doneCache = { rev: -1, map: {} };
+  function doneCountOf(t) {
+    if (doneCache.rev !== state.rev || !doneCache.map) {
+      var seen = {}, map = {};
+      ((state.data && state.data.logs) || []).forEach(function (l) {
+        var k = l.date + '|' + l.taskId;
+        if (seen[k]) return;
+        seen[k] = true;
+        map[l.taskId] = (map[l.taskId] || 0) + 1;
+      });
+      doneCache = { rev: state.rev, map: map };
+    }
+    return doneCache.map[t.id] || 0;
+  }
+
+  var MILESTONES = [[10, '🥉'], [30, '🥈'], [100, '🏆']];
+  function milestoneOf(n) {
+    var got = '', next = 0;
+    MILESTONES.forEach(function (m) { if (n >= m[0]) got = m[1]; else if (!next) next = m[0]; });
+    return { got: got, next: next };
+  }
+
+  // The first three days of a new habit are the hardest ("跨過 3 天門檻").
+  function newHabitDay(t, date) {
+    if (!t.since) return 0;
+    var d = daysBetween(t.since, date);
+    return d >= 0 && d < 3 ? d + 1 : 0;
   }
 
   // Low-energy days and the 核心 tasks, from the 訓練 state rows and the settings.
@@ -557,6 +598,11 @@
     if (isBonus(t)) sub.push(h('span', { class: 'chip' }, '加分'));
     if (done && tier && tier !== '標準') sub.push(h('span', { class: 'chip on' }, tier));
     if (streak > 0) sub.push(h('span', { class: 'muted' }, '🔥' + streak + '天'));
+    var nd = newHabitDay(t, date);
+    if (nd) sub.push(h('span', { class: 'chip on' }, '🌱 跨過 3 天門檻 第 ' + nd + '/3 天'));
+    var total = doneCountOf(t), ms = milestoneOf(total);
+    if (total > 0) sub.push(h('span', { class: 'muted' }, (ms.got ? ms.got + ' ' : '') + '累計 ' + total + ' 次' + (ms.next ? '・再 ' + (ms.next - total) + ' 次到 ' + ms.next : '')));
+    var cue = cuesOf()[t.id];
     var tap = function () {
       if (isCounterTask(t)) { state.modal = { type: 'counter', task: t, date: date }; renderModal(); }
       else if (hasOptions(t)) { state.modal = { type: 'options', task: t, date: date }; renderModal(); }
@@ -569,6 +615,7 @@
       h('div', { class: 'grow' },
         nameLine(t),
         h('div', null, sub),
+        cue ? h('div', { class: 'muted' }, '📍 ' + cue) : null,
         done && note ? h('div', { class: 'muted' }, note) : null,
         !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : null),
       ex ? h('button', { class: 'btn small', 'aria-label': '取消免責 ' + t.name, onclick: function () { unexemptTask(t, date); } }, '取消免責') : null,
@@ -603,12 +650,22 @@
     SLOT_ORDER.forEach(function (slot) {
       var list = items.filter(function (t) { return (t.slot || '不限') === slot; });
       if (!list.length) return;
-      nodes.push(h('h2', null, slot === '不限' ? '全天' : slot));
+      var left = list.filter(function (t) { return isDone(t, date, c.idx); }).length;
+      nodes.push(h('h2', { class: 'slothead' }, (slot === '不限' ? '全天' : slot), h('span', { class: 'slotcount' + (left === list.length ? ' full' : '') }, left + '/' + list.length)));
       list.forEach(function (t) { nodes.push(taskItem(t, c, date)); });
     });
   }
 
+  // Home has two sub-tabs like MyRoutine's 日常作息 / 待辦事項; the 待辦 pane is the same one as 記錄 > 待辦.
   function renderToday() {
+    var pane = state.homePane === 'todo' ? 'todo' : 'habits';
+    var seg = h('div', { class: 'seg' }, [['habits', '日常作息'], ['todo', '待辦事項']].map(function (p) {
+      return h('button', { class: 'btn' + (pane === p[0] ? ' on' : ''), 'aria-pressed': String(pane === p[0]), onclick: function () { state.homePane = p[0]; render(); } }, p[1]);
+    }));
+    return [seg].concat(pane === 'todo' ? todoPane(ledgerState()) : renderTodayHabits());
+  }
+
+  function renderTodayHabits() {
     var c = ctx(), date = state.date, isToday = date === today(), onLeave = !!c.leave[date];
     var daily = c.tasks.filter(function (t) { return !isAccumFreq(t.freq) && isScheduled(t, date); });
     var accum = c.tasks.filter(function (t) { return isAccumFreq(t.freq) && isScheduled(t, date); });
@@ -1387,11 +1444,13 @@
     state.todosLoading = true; state.todosError = '';
     api('todoList').then(function (res) { state.todos = res.todos; })
       .catch(function (e) { state.todosError = e.network ? '需要網路才能看待辦' : e.message; })
-      .then(function () { state.todosLoading = false; if (state.tab === 'ledger') render(); });
+      .then(function () { state.todosLoading = false; if (todoVisible()) render(); });
   }
 
+  function todoVisible() { return state.tab === 'ledger' || (state.tab === 'today' && state.homePane === 'todo'); }
+
   function todoDo(action, payload, okMsg, local) {
-    api(action, payload).then(function () { if (local) local(); toast(okMsg); if (state.tab === 'ledger') render(); })
+    api(action, payload).then(function () { if (local) local(); toast(okMsg); if (todoVisible()) render(); })
       .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
   }
 
@@ -1576,6 +1635,32 @@
       ms(10, 10, '10 天'), ms(20, 20 + 5, '20 天'), h('div', { class: 'muted' }, '整月每天都達標（請假日除外）：+50 星幣'));
   }
 
+  // One small calendar per fixed habit for this month: which days were done, which were missed, plus the milestone it has reached.
+  function habitMonthCards() {
+    var c = ctx(), t0 = today(), ym = monthKey(t0), first = ym + '-01', lead = weekdayOf(first) - 1, n = daysInMonth_(ym);
+    var tasks = c.tasks.filter(function (t) { return t.active && !isAccumFreq(t.freq); });
+    if (!tasks.length) return [h('p', { class: 'muted' }, '還沒有固定習慣。')];
+    return tasks.map(function (t) {
+      var cells = [], done = 0, due = 0, i, d;
+      for (i = 0; i < lead; i++) cells.push(h('i', { class: 'empty' }));
+      for (d = 1; d <= n; d++) {
+        var date = ym + '-' + pad2_(d), ok = isDone(t, date, c.idx), sch = isScheduled(t, date) && !c.leave[date], cls = '';
+        if (ok) { cls = 'stamp'; done++; due++; }
+        else if (date > t0) cls = 'future';
+        else if (c.leave[date]) cls = 'leave';
+        else if (sch) { cls = 'miss'; due++; }
+        else cls = 'rest';
+        if (date === t0) cls += ' now';
+        cells.push(h('i', { class: cls, title: date }, ok ? '✓' : String(d)));
+      }
+      var total = doneCountOf(t), ms = milestoneOf(total);
+      return h('div', { class: 'card ' + dimCls(t.dim) },
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, nameLine(t)), h('span', { class: 'muted' }, due ? Math.round(done / due * 100) + '%・' + done + '/' + due : '—')),
+        h('div', { class: 'cal mini' }, cells),
+        h('div', { class: 'muted' }, (ms.got ? ms.got + ' ' : '') + '累計 ' + total + ' 次' + (ms.next ? '・再 ' + (ms.next - total) + ' 次到 ' + ms.next : '・已到 100 次')));
+    });
+  }
+
   function skillCard(s, g) {
     var k = g.skills[s], span = k.nextAt - k.levelStart, done = k.sp - k.levelStart;
     return h('div', { class: 'card skill frame-' + (k.frame || 'none') },
@@ -1618,6 +1703,8 @@
     SKILLS.forEach(function (s) { nodes.push(skillCard(s, g)); });
     nodes.push(h('h2', null, '本月打卡'));
     nodes.push(monthCalendar(g));
+    nodes.push(h('h2', null, '各習慣本月'));
+    habitMonthCards().forEach(function (n) { nodes.push(n); });
     if (g.clean.length) {
       nodes.push(h('h2', null, '乾淨天數'));
       nodes.push(h('div', { class: 'card' }, g.clean.map(function (c) {
@@ -1704,11 +1791,17 @@
       options: isAccumFreq(freq) ? '' : f.options.value
     };
     var coreNow = coreIdsFrom(state.data.settings), wantCore = !!(original.id && f.core && f.core.checked), isCore = coreNow.indexOf(original.id) >= 0;
+    var cues = cuesOf(), oldCue = cues[original.id] || '', newCue = original.id && f.cue ? f.cue.value.trim().slice(0, 20) : '';
     state.busy = true; render();
     api('saveTask', { task: task }).then(function () {
       if (original.id && wantCore !== isCore) {
         var next = wantCore ? coreNow.concat([original.id]) : coreNow.filter(function (x) { return x !== original.id; });
         return api('setSetting', { key: 'coreTasks', value: next.join(',') });
+      }
+    }).then(function () {
+      if (original.id && newCue !== oldCue) {
+        if (newCue) cues[original.id] = newCue; else delete cues[original.id];
+        return api('setSetting', { key: 'taskCues', value: JSON.stringify(cues) });
       }
     }).then(function () { state.editing = null; toast('已儲存'); }).catch(function (e) { toast(e.network ? '需要網路才能修改任務' : e.message); })
       .then(function () { state.busy = false; return refresh(); });
@@ -1750,6 +1843,8 @@
         h('label', { class: 'f', for: 'f-down' }, '最低版內容（選填，不舒服時；做到這樣也不斷）'),
         h('input', { type: 'text', id: 'f-down', name: 'tierDown', value: t.tierDown, maxlength: '60' }),
         h('p', { class: 'muted' }, '選項和進階／最低二選一。')),
+      t.id ? h('label', { class: 'f', for: 'f-cue' }, '情境提示（選填，例如「上班路上」「飯後」；會顯示在今日這項下面）') : null,
+      t.id ? h('input', { type: 'text', id: 'f-cue', name: 'cue', maxlength: '20', value: cuesOf()[t.id] || '' }) : null,
       h('label', { class: 'f', for: 'f-link' }, '連結（選填，https://）'),
       h('input', { type: 'url', id: 'f-link', name: 'link', value: t.link }),
       t.id ? h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'core', checked: coreIdsFrom(state.data.settings).indexOf(t.id) >= 0 }), ' 低能量日仍要做（核心任務）') : null,
@@ -1796,7 +1891,34 @@
           } }, '刪除'))));
     });
     if (!state.data.tasks.length) nodes.push(h('p', { class: 'muted' }, '還沒有任務。'));
+    nodes.push(h('h2', null, '模板（一鍵加入一組）'));
+    nodes.push(h('p', { class: 'muted' }, '加進來的都是「加分」，不會動到必做完成率和連續天數；之後在上面「編輯」可以改成必做。同名的任務不會重複加。'));
+    TEMPLATES.forEach(function (tp) { nodes.push(templateCard(tp)); });
     return nodes;
+  }
+
+  // Starter groups, all 加分 so adding one cannot change the streak math. Edit them here to match your own routines.
+  var TEMPLATES = [
+    { name: '🌅 早晨例行', items: [['起床後 3 分鐘伸展', '健康', '早', '🧘'], ['喝一杯水', '健康', '早', '💧'], ['吃早餐', '健康', '早', '🍳']] },
+    { name: '🌙 睡前例行', items: [['睡前不滑手機', '情緒', '晚', '📵'], ['寫短短幾句日記', '情緒', '晚', '📝'], ['拉上窗簾準備睡覺', '健康', '晚', '🌙']] },
+    { name: '🍂 狀態欠佳最低版', items: [['喝杯水', '健康', '不限', '💧'], ['洗熱水澡', '健康', '晚', '🛁'], ['輕鬆散步 10 分鐘', '健康', '不限', '🚶']] }
+  ];
+
+  function templateCard(tp) {
+    var have = {};
+    state.data.tasks.forEach(function (t) { have[t.name] = true; });
+    var todo = tp.items.filter(function (it) { return !have[it[0]]; });
+    return h('div', { class: 'card' },
+      h('div', { class: 'name' }, tp.name),
+      h('div', { class: 'muted' }, tp.items.map(function (it) { return it[3] + ' ' + it[0] + (have[it[0]] ? '（已有）' : ''); }).join('、')),
+      h('button', { class: 'btn small primary', style: 'margin-top:8px', disabled: !todo.length || state.busy, onclick: function () {
+        state.busy = true; render();
+        todo.reduce(function (p, it) {
+          return p.then(function () { return api('saveTask', { task: Object.assign(blankTask(), { name: it[0], dim: it[1], slot: it[2], icon: it[3], cls: '加分' }) }); });
+        }, Promise.resolve()).then(function () { toast('已加入 ' + todo.length + ' 項'); })
+          .catch(function (e) { toast(e.network ? '需要網路才能新增任務' : e.message); })
+          .then(function () { state.busy = false; return refresh(); });
+      } }, todo.length ? '加入 ' + todo.length + ' 項' : '都已加入'));
   }
 
   // ---- month / quarter ----
@@ -1989,7 +2111,15 @@
     b.addEventListener('click', function () { goTab(b.getAttribute('data-tab')); });
   });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.modal) closeModal(); });
-  window.addEventListener('online', refresh);
+  window.addEventListener('online', function () { refresh(); });
+  // A tab that stays open and visible (desktop browser) never gets a visibilitychange, so changes made on the phone would not show up:
+  // pull again when the window regains focus and once a minute, but only when nothing is being typed or shown over the page.
+  window.addEventListener('focus', function () { refresh(true); });
+  setInterval(function () {
+    var el = document.activeElement, typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+    if (document.hidden || !state.cfg || !state.data || state.modal || state.challenge || typing || state.queue.length || flushing) return;
+    refresh(true);
+  }, 60000);
   var hiddenAt = 0;
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { hiddenAt = Date.now(); return; }

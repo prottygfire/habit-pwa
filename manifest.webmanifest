@@ -5,8 +5,8 @@
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f6f7f5",
-  "theme_color": "#2e7d5b",
+  "background_color": "#f8f6f3",
+  "theme_color": "#c2570c",
   "lang": "zh-Hant",
   "shortcuts": [
     { "name": "今日打卡", "short_name": "今日", "url": "./?tab=today" },

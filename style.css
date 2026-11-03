@@ -1,11 +1,11 @@
 :root {
-  --bg: #f6f7f5; --card: #ffffff; --text: #1f2a24; --muted: #66736b; --line: #e1e6e2;
-  --accent: #2e7d5b; --accent-ink: #ffffff; --warn: #b3541e; --track: #e3e9e5;
+  --bg: #f8f6f3; --card: #ffffff; --text: #2a231d; --muted: #766b62; --line: #e8e2db;
+  --accent: #c2570c; --accent-ink: #ffffff; --warn: #b3261e; --track: #ebe5de;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #141916; --card: #1d2420; --text: #e8eee9; --muted: #98a59d; --line: #2c352f;
-    --accent: #4cb68a; --accent-ink: #0c1511; --warn: #e49a6b; --track: #2c352f;
+    --bg: #181411; --card: #231d19; --text: #f0e9e2; --muted: #a89d93; --line: #382f28;
+    --accent: #f08a3c; --accent-ink: #1a0f06; --warn: #ef7a6b; --track: #382f28;
   }
 }
 * { box-sizing: border-box; }
@@ -74,9 +74,9 @@ textarea { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px sol
 .btn.tier span { overflow-wrap: anywhere; text-align: right; }
 
 /* Dimension colours: .d0..d5 follow the order 健康 財商 學習 情緒 工作 娛樂 */
-:root { --d0: #2a8a5c; --d1: #b27a0e; --d2: #2f6fc4; --d3: #a8478f; --d4: #566b7d; --d5: #cc5a22; --dc-ink: #ffffff; }
+:root { --d0: #c2570c; --d1: #b27a0e; --d2: #2f6fc4; --d3: #a8478f; --d4: #566b7d; --d5: #2a8a5c; --dc-ink: #ffffff; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --d0: #4cc38a; --d1: #f0b84a; --d2: #6aa3f0; --d3: #d783c4; --d4: #92a6b8; --d5: #f29058; --dc-ink: #10150f; }
+  :root:not([data-theme="light"]) { --d0: #f29058; --d1: #f0b84a; --d2: #6aa3f0; --d3: #d783c4; --d4: #92a6b8; --d5: #4cc38a; --dc-ink: #150f0a; }
 }
 .d0 { --dc: var(--d0); } .d1 { --dc: var(--d1); } .d2 { --dc: var(--d2); } .d3 { --dc: var(--d3); } .d4 { --dc: var(--d4); } .d5 { --dc: var(--d5); }
 .item[class*=" d"], .card[class*=" d"] { border-left: 6px solid var(--dc); }

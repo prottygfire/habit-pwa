@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-02 v14.2';
+  var VERSION = '2026-11-03 v15';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -142,7 +142,8 @@
         // You may have ticked something while this request was on its way: the answer was read before that change, so applying it
         // would put the task back to unchecked. Drop it and sync again once the new change has been sent.
         if (state.mutations !== seq || state.queue.length || flushing) { stale = true; return; }
-        state.data = { tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
+        var keepLedger = state.data && state.data.ledger;
+        state.data = { ledger: keepLedger, tasks: res.tasks, logs: res.logs, leave: res.leave, goals: res.goals, history: res.history, train: res.train || [], settings: res.settings || {},
           slipItems: res.slipItems || [], slips: res.slips || [], rewards: res.rewards || [], redemptions: res.redemptions || [],
           library: res.library || [], challenges: res.challenges || [], exempts: res.exempts || [],
           workouts: res.workouts || [], health: res.health || [], checkins: res.checkins || [], strengthMoves: res.strengthMoves || [], strength: res.strength || [], goalMap: res.goalMap || [] };
@@ -152,7 +153,7 @@
     }).catch(function (e) {
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; }
       else if (!e.network && !e.transient) toast(e.message);
-    }).then(function () { render(); celebrate(); if (stale) setTimeout(refresh, 600); });
+    }).then(function () { render(); celebrate(); if (stale) setTimeout(refresh, 600); else if (state.data && state.cfg && state.tab !== 'ledger') loadLedger(); });
   }
 
   function enqueue(action, payload) {
@@ -236,7 +237,7 @@
 
   function confetti() {
     if (!PREFS.anim) return;
-    var colors = ['#4cc38a', '#f0b84a', '#6aa3f0', '#d783c4', '#f29058'];
+    var colors = ['#f29058', '#f0b84a', '#6aa3f0', '#d783c4', '#4cc38a'];
     var box = h('div', { class: 'confetti', 'aria-hidden': 'true' });
     for (var i = 0; i < 26; i++) {
       box.appendChild(h('i', { style: 'left:' + Math.round(Math.random() * 100) + '%;background:' + colors[i % colors.length] +
@@ -649,7 +650,6 @@
       accum.forEach(function (t) { nodes.push(accumItem(t, c, date)); });
     }
     if (!daily.length && !accum.length) nodes.push(h('p', { class: 'muted' }, '這天沒有任務。到「任務」頁新增。'));
-    renderSlips(date).forEach(function (n) { nodes.push(n); });
     nodes.push(checkinCard(date));
     return nodes;
   }
@@ -658,34 +658,6 @@
     var g = game(), pts = 0;
     SKILLS.forEach(function (s) { pts += g.skills[s].gain; });
     return h('div', { class: 'gainline' }, h('span', null, '今天 +' + fmtPts(pts) + ' 技能點'), h('span', null, '⭐ ' + g.coins.balance));
-  }
-
-  // ---- 小失誤 (扣分項): recorded only, never subtracted ----
-
-  function slipCount(id, date) { return dget('slips').filter(function (r) { return r.item === id && r.date === date; }).length; }
-
-  function slipChange(item, date, delta) {
-    var d = state.data;
-    if (delta > 0) d.slips = dget('slips').concat([{ date: date, item: item.id }]);
-    else {
-      var list = dget('slips').slice(), i;
-      for (i = list.length - 1; i >= 0; i--) if (list[i].item === item.id && list[i].date === date) break;
-      if (i >= 0) list.splice(i, 1);
-      d.slips = list;
-    }
-    enqueue('slip', { date: date, item: item.id, delta: delta });
-  }
-
-  function renderSlips(date) {
-    var items = dget('slipItems').filter(function (i) { return i.active; });
-    if (!items.length) return [];
-    var row = h('div', { class: 'slips' }, items.map(function (i) {
-      var n = slipCount(i.id, date);
-      return h('div', { class: 'slip' + (n ? ' has' : '') },
-        h('button', { class: 'slipmain', 'aria-label': '記一筆 ' + i.name, onclick: function () { slipChange(i, date, 1); } }, h('span', { class: 'ico', 'aria-hidden': 'true' }, i.icon || '•'), i.name, n ? h('b', null, ' ×' + n) : null),
-        n ? h('button', { class: 'slipundo', 'aria-label': '少記一筆 ' + i.name, onclick: function () { slipChange(i, date, -1); } }, '−') : null);
-    }));
-    return [h('h2', null, '小失誤（只記錄，不扣分）'), row];
   }
 
   // ---- 限時挑戰 ----

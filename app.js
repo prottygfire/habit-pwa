@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-03 v17';
+  var VERSION = '2026-11-04 v18';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -74,12 +74,20 @@
   }
 
   var toastTimer;
-  function toast(msg) {
+  // action = {label, fn}: the toast becomes tappable for 6 seconds (used for 復原 after a swipe delete).
+  function toast(msg, action) {
     var el = document.getElementById('toast');
     el.textContent = msg;
+    el.onclick = null;
+    el.classList.toggle('act', !!action);
+    if (action) {
+      el.appendChild(document.createTextNode('　'));
+      el.appendChild(h('b', null, action.label));
+      el.onclick = function () { el.classList.remove('on', 'act'); el.onclick = null; action.fn(); };
+    }
     el.classList.add('on');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.classList.remove('on'); }, 3200);
+    toastTimer = setTimeout(function () { el.classList.remove('on', 'act'); el.onclick = null; }, action ? 6000 : 3200);
   }
 
   // ---- API ----
@@ -418,6 +426,12 @@
     if (item.isRun && rt) saveMinutes(rt, date, 0);
   }
 
+  function vacOn(date) { var r = trainOn('_mode', date); return !!r && r.version === '休假'; }
+  function setVacMode(date, on) {
+    setTrainLocal('_mode', date, on ? { version: '休假' } : null);
+    enqueue('trainSet', { date: date, item: '_mode', done: on, version: on ? '休假' : '' });
+  }
+
   function setTrainState(date, st) {
     var on = trainStateOn(date) !== st;
     setTrainLocal('_state', date, on ? { version: st } : null);
@@ -474,7 +488,7 @@
   // 飲食狀態: tap = +1, tap again = +2, "−" takes one back (same feel as the 小失誤 buttons). 「普通」 and the others exclude each other.
   function counterModal(m, c) {
     var t = m.task, date = m.date, done = isDone(t, date, c.idx);
-    var labels = t.options.slice(1).map(function (o) { return parseOption(o).base; });
+    var labels = counterLabels(t).map(function (o) { return parseOption(o).base; });
     var counts = {};
     parseNote(noteOn(t, date, c.idx)).forEach(function (p) { counts[p.base] = p.count > 0 ? p.count : 1; });
     var row = h('div', { class: 'slips' });
@@ -1054,15 +1068,20 @@
   // 今天的狀態: 精神好／普通／疲勞 (shared with the 訓練 tab). 疲勞 = 低能量日.
   function dayStateBar(date) {
     var st = trainStateOn(date), future = date > today(), settings = state.data.settings || {};
-    var coreN = coreIdsFrom(settings).length;
+    var coreN = coreIdsFrom(settings).length, vacN = vacIdsFrom(settings).length, vac = vacOn(date);
     return h('div', { class: 'card' },
-      h('div', { class: 'muted' }, '今天的狀態'),
+      h('div', { class: 'muted' }, '今天的狀態（疲勞＝低潮）'),
       h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
-        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s);
+        return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s === '疲勞' ? '疲勞・低潮' : s);
       })),
       h('div', { class: 'muted' }, st === '疲勞'
-        ? (coreN ? '低能量日：只有標「核心」的任務還要做，其他今天放過，不影響連續天數。' : '低能量日：還沒有設定核心任務。到「任務」頁編輯任務，勾選「低能量日仍要做」。')
-        : '選「疲勞」＝低能量日，只做核心任務；訓練頁也會給輕鬆版。'));
+        ? (coreN ? '低潮（低能量日）：只有標「核心」的任務還要做，其他今天放過，不影響連續天數。' : '低潮（低能量日）：還沒有設定核心任務。到「任務」頁編輯任務，勾選「低能量日仍要做」。')
+        : '選「疲勞」＝低潮，只做核心任務；訓練頁也會給輕鬆版。'),
+      h('div', { class: 'muted', style: 'margin-top:10px' }, '今天的模式'),
+      h('div', { class: 'seg' }, [['平日', false], ['休假', true]].map(function (m) {
+        return h('button', { class: 'btn' + (vac === m[1] ? ' on' : ''), 'aria-pressed': String(vac === m[1]), disabled: future, onclick: function () { if (vac !== m[1]) setVacMode(date, m[1]); } }, m[0]);
+      })),
+      vac ? h('div', { class: 'muted' }, vacN ? '休假日：只有標「休假日仍要做」的任務還要做，其他今天放過，不影響連續天數。' : '休假日：還沒有設定要做的任務。到「任務」頁編輯任務，勾選「休假日仍要做」。') : null);
   }
 
   // ---- 力量紀錄 (in the 訓練 tab) ----
@@ -1459,6 +1478,52 @@
     return L0.todoDraft;
   }
 
+  // Delete without asking, but with a 6-second 復原 (the row is written back with the same id).
+  function removeTodo(t) {
+    state.todos = (state.todos || []).filter(function (x) { return x.id !== t.id; });
+    render();
+    api('todoDelete', { id: t.id }).then(function () {
+      toast('已刪除「' + t.text.slice(0, 12) + '」', { label: '復原', fn: function () {
+        api('todoSave', { todo: { id: t.id, text: t.text, time: t.time, repeat: t.repeat, date: t.date, weekdays: t.weekdays, monthDay: t.monthDay, enabled: t.enabled, done: t.done, lastSent: t.lastSent } })
+          .then(function () { state.todos = null; loadTodos(); toast('已復原'); })
+          .catch(function (e) { toast(e.network ? '需要網路才能復原' : e.message); });
+      } });
+    }).catch(function (e) { state.todos = null; loadTodos(); toast(e.network ? '需要網路才能刪除' : e.message); });
+  }
+
+  // Swipe a card sideways (either direction, 90px) to run onSwipe; a short drag springs back. Buttons inside keep working.
+  function swipeable(el, onSwipe) {
+    var sx = 0, sy = 0, dx = 0, on = false, moved = false;
+    el.style.touchAction = 'pan-y';
+    el.addEventListener('pointerdown', function (ev) {
+      if (ev.target.closest && ev.target.closest('button,input,select,a,label')) return;
+      on = true; moved = false; sx = ev.clientX; sy = ev.clientY; dx = 0; el.style.transition = 'none';
+    });
+    el.addEventListener('pointermove', function (ev) {
+      if (!on) return;
+      dx = ev.clientX - sx;
+      if (!moved && Math.abs(dx) < 12) return;
+      if (!moved && Math.abs(ev.clientY - sy) > Math.abs(dx)) { on = false; return; }
+      moved = true;
+      el.style.transform = 'translateX(' + dx + 'px)';
+      el.style.opacity = String(Math.max(0.3, 1 - Math.abs(dx) / 220));
+    });
+    function end() {
+      if (!on) return;
+      on = false;
+      el.style.transition = 'transform .18s, opacity .18s';
+      if (moved && Math.abs(dx) >= 90) {
+        el.style.transform = 'translateX(' + (dx > 0 ? 120 : -120) + '%)';
+        el.style.opacity = '0';
+        setTimeout(onSwipe, 170);
+      } else { el.style.transform = ''; el.style.opacity = ''; }
+    }
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    el.addEventListener('pointerleave', end);
+    return el;
+  }
+
   function todoPane(L0) {
     var nodes = [];
     if (!state.todos) {
@@ -1471,23 +1536,20 @@
     if (!state.todos.length) nodes.push(h('p', { class: 'muted' }, '還沒有自訂提醒。'));
     state.todos.forEach(function (t) {
       var off = !t.enabled || t.done;
-      nodes.push(h('div', { class: 'card' + (off ? ' inactive' : '') },
+      nodes.push(swipeable(h('div', { class: 'card swipe' + (off ? ' inactive' : '') },
         h('div', { class: 'name' }, t.text),
-        h('div', { class: 'muted' }, describeTodo(t) + (t.done ? '（已完成）' : t.enabled ? '' : '（已停用）')),
+        h('div', { class: 'muted' }, describeTodo(t) + (t.done ? '（已完成）' : t.enabled ? '' : '・不提醒') + '　‹ 左右滑可刪除 ›'),
         h('div', { class: 'row', style: 'margin-top:8px' },
           t.done ? null : h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { done: true } }, '已完成', function () { t.done = true; }); } }, '完成'),
-          h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { enabled: !t.enabled } }, t.enabled ? '已停用' : '已啟用', function () { t.enabled = !t.enabled; }); } }, t.enabled ? '停用' : '啟用'),
+          h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { enabled: !t.enabled } }, t.enabled ? '不再提醒' : '會用 Telegram 提醒', function () { t.enabled = !t.enabled; }); } }, t.enabled ? '關提醒' : '開提醒'),
           h('span', { class: 'grow' }),
-          h('button', { class: 'btn small danger', onclick: function () {
-            if (!confirm('刪除「' + t.text + '」？')) return;
-            todoDo('todoDelete', { id: t.id }, '已刪除', function () { state.todos = state.todos.filter(function (x) { return x.id !== t.id; }); });
-          } }, '刪除'))));
+          h('button', { class: 'btn small danger', onclick: function () { removeTodo(t); } }, '刪除'))), function () { removeTodo(t); }));
     });
     var d = todoDraft(L0), WD = ['日', '一', '二', '三', '四', '五', '六'];
     nodes.push(h('h2', null, '新增提醒'));
     var form = h('form', { class: 'card', onsubmit: function (ev) {
       ev.preventDefault();
-      var todo = { text: d.text, time: d.time, repeat: d.repeat, date: d.date, weekdays: d.weekdays, monthDay: d.monthDay };
+      var todo = { text: d.text, time: d.time, repeat: d.repeat, date: d.date, weekdays: d.weekdays, monthDay: d.monthDay, enabled: d.remind !== false };
       try { validateTodo(todo); } catch (e) { toast(e.message); return; }
       api('todoSave', { todo: todo }).then(function () { d.text = ''; toast('已新增提醒'); state.todos = null; loadTodos(); })
         .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
@@ -1505,7 +1567,8 @@
         return h('button', { class: 'fl' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on), onclick: function () { if (on) d.weekdays = d.weekdays.filter(function (x) { return x !== i; }); else d.weekdays = d.weekdays.concat([i]); render(); } }, w);
       }))) : null,
       d.repeat === 'monthly' ? h('div', null, h('label', { class: 'f', for: 't-md' }, '每月幾號（31 號在小月會改到月底）'), h('input', { type: 'number', id: 't-md', min: '1', max: '31', inputmode: 'numeric', value: d.monthDay, oninput: function (ev) { d.monthDay = ev.target.value; } })) : null,
-      h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:12px;width:100%' }, '新增提醒'));
+      h('label', { class: 'row f' }, h('input', { type: 'checkbox', checked: d.remind !== false, onchange: function (ev) { d.remind = ev.target.checked; } }), ' 到時間用 Telegram 提醒（取消勾選＝只是記在清單裡）'),
+      h('button', { class: 'btn primary', type: 'submit', style: 'margin-top:12px;width:100%' }, '新增'));
     nodes.push(form);
     return nodes;
   }
@@ -1799,6 +1862,12 @@
         return api('setSetting', { key: 'coreTasks', value: next.join(',') });
       }
     }).then(function () {
+      var vacNow = vacIdsFrom(state.data.settings), wantVac = !!(original.id && f.vcore && f.vcore.checked), isVac = vacNow.indexOf(original.id) >= 0;
+      if (original.id && wantVac !== isVac) {
+        var nextVac = wantVac ? vacNow.concat([original.id]) : vacNow.filter(function (x) { return x !== original.id; });
+        return api('setSetting', { key: 'vacTasks', value: nextVac.join(',') });
+      }
+    }).then(function () {
       if (original.id && newCue !== oldCue) {
         if (newCue) cues[original.id] = newCue; else delete cues[original.id];
         return api('setSetting', { key: 'taskCues', value: JSON.stringify(cues) });
@@ -1847,7 +1916,8 @@
       t.id ? h('input', { type: 'text', id: 'f-cue', name: 'cue', maxlength: '20', value: cuesOf()[t.id] || '' }) : null,
       h('label', { class: 'f', for: 'f-link' }, '連結（選填，https://）'),
       h('input', { type: 'url', id: 'f-link', name: 'link', value: t.link }),
-      t.id ? h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'core', checked: coreIdsFrom(state.data.settings).indexOf(t.id) >= 0 }), ' 低能量日仍要做（核心任務）') : null,
+      t.id ? h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'core', checked: coreIdsFrom(state.data.settings).indexOf(t.id) >= 0 }), ' 低能量日（低潮）仍要做（核心任務）') : null,
+      t.id ? h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'vcore', checked: vacIdsFrom(state.data.settings).indexOf(t.id) >= 0 }), ' 休假日仍要做') : null,
       h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'remind', checked: t.remind }), ' 用 Telegram 提醒（只提醒必做）'),
       h('label', { class: 'row f' }, h('input', { type: 'checkbox', name: 'active', checked: t.active }), ' 啟用（取消勾選＝暫停）'),
       h('div', { class: 'row', style: 'margin-top:12px' },
@@ -2024,7 +2094,7 @@
       nodes.push(h('h2', null, '飲食狀態'));
       nodes.push(h('div', { class: 'card' }, dp.days
         ? [h('div', null, '有記錄 ', h('b', null, dp.days), ' 天・飲食分 ', h('b', null, dp.score100), '（日均 ', dp.avgDaily, ' / 16）'),
-           h('div', { style: 'margin-top:8px' }, DIET_NEG.concat(DIET_POS).map(function (e) { return h('span', { class: 'chip' + (dp.totals[e] ? ' on' : '') }, e + ' ' + dp.totals[e] + ' 次・' + dp.dayCounts[e] + ' 天'); }))]
+           h('div', { style: 'margin-top:8px' }, DIET_NEG.concat(DIET_POS, DIET_INFO).map(function (e) { return h('span', { class: 'chip' + (dp.totals[e] ? ' on' : '') }, e + ' ' + dp.totals[e] + ' 次・' + dp.dayCounts[e] + ' 天'); }))]
         : h('div', { class: 'muted' }, '在今日頁點「早餐飲食」等任務記錄每餐狀況，這裡會匯整飲食分與各項次數。')));
     }
     var trend = dailyRates(c.tasks, range.start, range.end < t0 ? range.end : t0, c.idx, c.leave);

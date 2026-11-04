@@ -187,3 +187,5 @@ td.auto { font-weight: 600; }
 .cal.mini { gap: 3px; margin: 8px 0; }
 .cal.mini i { height: 22px; font-size: .6875rem; border-radius: 6px; }
 .cal.mini i.rest { opacity: .35; }
+#toast.act { pointer-events: auto; cursor: pointer; }
+.card.swipe { user-select: none; -webkit-user-select: none; }

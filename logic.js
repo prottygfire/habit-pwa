@@ -112,6 +112,8 @@ function indexLogs(logs, exempts, extras) {
   var ex = extras || {}, j;
   for (j = 0; j < (ex.low || []).length; j++) idx['low|' + ex.low[j]] = true;
   for (j = 0; j < (ex.core || []).length; j++) idx['core|' + ex.core[j]] = true;
+  for (j = 0; j < (ex.vac || []).length; j++) idx['vac|' + ex.vac[j]] = true;
+  for (j = 0; j < (ex.vcore || []).length; j++) idx['vcore|' + ex.vcore[j]] = true;
   for (var i = 0; i < logs.length; i++) {
     var l = logs[i], k = l.date + '|' + l.taskId;
     idx[k] = true;
@@ -139,8 +141,16 @@ function hasCore_(idx) {
   for (var k in idx) if (k.indexOf('core|') === 0) return true;
   return false;
 }
+// 休假日 (mode 休假, stored as the pseudo item '_mode'): the same idea with its own list, the tasks flagged 休假日仍要做 (settings.vacTasks).
+function isVacDay(date, idx) { return idx['vac|' + date] === true; }
+function hasVcore_(idx) {
+  for (var k in idx) if (k.indexOf('vcore|') === 0) return true;
+  return false;
+}
 function isRelieved(task, date, idx) {
-  return isLowDay(date, idx) && isFixedMust_(task) && idx['core|' + task.id] !== true && hasCore_(idx);
+  if (!isFixedMust_(task)) return false;
+  return (isLowDay(date, idx) && idx['core|' + task.id] !== true && hasCore_(idx)) ||
+    (isVacDay(date, idx) && idx['vcore|' + task.id] !== true && hasVcore_(idx));
 }
 // Not required that day: waived by a 免責券, or let go on a low-energy day.
 function isWaived(task, date, idx) { return isExempt(task, date, idx) || isRelieved(task, date, idx); }
@@ -152,7 +162,13 @@ function lowDaysFrom(train) {
 function coreIdsFrom(settings) {
   return String((settings && settings.coreTasks) || '').split(/[,、\s]+/).filter(function (x) { return x; });
 }
-function extrasFrom(train, settings) { return { low: lowDaysFrom(train), core: coreIdsFrom(settings) }; }
+function vacDaysFrom(train) {
+  return (train || []).filter(function (r) { return r.item === '_mode' && r.version === '休假'; }).map(function (r) { return r.date; });
+}
+function vacIdsFrom(settings) {
+  return String((settings && settings.vacTasks) || '').split(/[,、\s]+/).filter(function (x) { return x; });
+}
+function extrasFrom(train, settings) { return { low: lowDaysFrom(train), core: coreIdsFrom(settings), vac: vacDaysFrom(train), vcore: vacIdsFrom(settings) }; }
 function minutesOn(task, date, idx) { return idx['m|' + date + '|' + task.id] || 0; }
 function tierOn(task, date, idx) { return isDone(task, date, idx) ? idx['t|' + date + '|' + task.id] : ''; }
 function noteOn(task, date, idx) { return idx['n|' + date + '|' + task.id] || ''; }
@@ -1597,9 +1613,21 @@ function dreamCovHits(text, coverage, today) {
 var DIET_MEALS = ['早餐', '午餐', '晚餐', '消夜'];
 var DIET_NEG = ['🥤', '🍟', '🍷', '🍩'];
 var DIET_POS = ['🥗', '🥬', '🍎'];
+var DIET_INFO = ['🍖'];   // recorded and counted, but not scored (so months stay comparable with the old 飲食分)
+var DIET_PROTEIN = '🍖足量蛋白';
 var DIET_PLAIN = '普通（沒有特別狀況）';
 var DIET_MARK = '#計數';   // first option line: this task uses the tap-counter window instead of the number inputs
-var DIET_OPTIONS = [DIET_MARK, '🥤含糖飲料', '🍟炸物', '🍷酒', '🍩甜點', '🥗健康餐', '🥬足量蔬菜', '🍎水果', DIET_PLAIN];
+var DIET_OPTIONS = [DIET_MARK, '🥤含糖飲料', '🍟炸物', '🍷酒', '🍩甜點', '🥗健康餐', '🥬足量蔬菜', '🍎水果', DIET_PROTEIN, DIET_PLAIN];
+
+// Existing meal tasks were created before 🍖 existed: show it anyway (just before 普通) so no sheet migration is needed.
+function counterLabels(t) {
+  var labels = t.options.slice(1);
+  if (!labels.some(function (o) { return String(o).indexOf(DIET_INFO[0]) === 0; })) {
+    var at = labels.indexOf(DIET_PLAIN);
+    labels.splice(at < 0 ? labels.length : at, 0, DIET_PROTEIN);
+  }
+  return labels;
+}
 
 function isCounterTask(t) { return !!(t && t.options && t.options.length && t.options[0] === DIET_MARK); }
 
@@ -1613,9 +1641,9 @@ function dietMealOf(t) {
 // Note like '🥤含糖飲料*2、🍟炸物' -> {'🥤': 2, '🍟': 1, ...}; an item without *N counts once.
 function dietCounts(note) {
   var out = {};
-  DIET_NEG.concat(DIET_POS).forEach(function (e) { out[e] = 0; });
+  DIET_NEG.concat(DIET_POS, DIET_INFO).forEach(function (e) { out[e] = 0; });
   parseNote(note).forEach(function (p) {
-    DIET_NEG.concat(DIET_POS).forEach(function (e) {
+    DIET_NEG.concat(DIET_POS, DIET_INFO).forEach(function (e) {
       if (p.base.indexOf(e) === 0) out[e] += p.count > 0 ? p.count : 1;
     });
   });

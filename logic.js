@@ -1411,6 +1411,41 @@ function validateTodo(t) {
   };
 }
 
+// The next day a todo is due on or after `today` ('' when it never comes again). Sunday = 0 in t.weekdays, like the reminder sheet.
+function todoNextDate(t, today) {
+  if (t.repeat === 'once') return t.date || '';
+  var i, d;
+  if (t.repeat === 'daily') return today;
+  if (t.repeat === 'weekly') {
+    for (i = 0; i < 7; i++) { d = addDays(today, i); if ((t.weekdays || []).indexOf(weekdayOf(d) % 7) >= 0) return d; }
+    return '';
+  }
+  if (t.repeat === 'monthly') {
+    for (i = 0; i < 62; i++) {
+      d = addDays(today, i);
+      var dom = Number(d.slice(8, 10)), last = daysInMonth_(d.slice(0, 7));
+      if (dom === Math.min(Number(t.monthDay), last)) return d;
+    }
+  }
+  return '';
+}
+
+// Splits the list for the 待辦 page: today / within 7 days / later (soonest first), and past (done, or a one-time item whose day has gone).
+function groupTodos(todos, today) {
+  var g = { today: [], week: [], later: [], past: [] }, week = addDays(today, 7);
+  function key(t) { return (todoNextDate(t, today) || '9999-99-99') + ' ' + (t.time || ''); }
+  todos.forEach(function (t) {
+    var nx = todoNextDate(t, today);
+    if (t.done || !nx || (t.repeat === 'once' && nx < today)) g.past.push(t);
+    else if (nx === today) g.today.push(t);
+    else if (nx <= week) g.week.push(t);
+    else g.later.push(t);
+  });
+  ['today', 'week', 'later'].forEach(function (k) { g[k].sort(function (a, b) { return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0; }); });
+  g.past.sort(function (a, b) { return (b.date || '') < (a.date || '') ? -1 : 1; });
+  return g;
+}
+
 function describeTodo(t) {
   var wd = ['日', '一', '二', '三', '四', '五', '六'];
   var when = { once: t.date, daily: '每天', weekly: '每週' + (t.weekdays || []).map(function (d) { return wd[d]; }).join('、'), monthly: '每月' + t.monthDay + '日' }[t.repeat];

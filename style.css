@@ -189,3 +189,14 @@ td.auto { font-weight: 600; }
 .cal.mini i.rest { opacity: .35; }
 #toast.act { pointer-events: auto; cursor: pointer; }
 .card.swipe { user-select: none; -webkit-user-select: none; }
+.sparkwrap { position: relative; }
+.yax { position: absolute; left: 4px; font-size: .6875rem; color: var(--muted); background: var(--bg); padding: 0 3px; border-radius: 4px; line-height: 1.2; }
+.yax.t { top: 0; }
+.yax.b { bottom: 0; }
+.axnote { font-size: .75rem; margin-top: 2px; }
+.pastbox { margin-top: 12px; }
+.pastbox > summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+.habitsec { margin-top: 20px; }
+.habitsec > summary { cursor: pointer; font-size: 1rem; font-weight: 600; color: var(--muted); padding: 6px 0; }
+.card.habit > summary { cursor: pointer; list-style: none; }
+.card.habit > summary::-webkit-details-marker { display: none; }

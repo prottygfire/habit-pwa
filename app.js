@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-04 v18';
+  var VERSION = '2026-11-04 v19';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -931,8 +931,13 @@
     var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'spark', role: 'img', 'aria-label': o.label || '趨勢圖', preserveAspectRatio: 'none' });
     svg.appendChild(svgEl('path', { d: path, fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' }));
     var fmt = o.fmt || String;
-    return h('div', null, svg,
-      h('div', { class: 'row muted', style: 'justify-content:space-between' }, h('span', null, d0.slice(5) + '　' + fmt(points[0].value)), h('span', null, d1.slice(5) + '　' + fmt(points[points.length - 1].value))));
+    // The line is drawn between this chart's own lowest and highest value (it does not start at 0). With invert, a LOW number is drawn high.
+    var topV = o.invert ? lo : hi, botV = o.invert ? hi : lo;
+    [P, H - P].forEach(function (y) { svg.insertBefore(svgEl('line', { x1: '0', x2: String(W), y1: String(y), y2: String(y), stroke: 'currentColor', 'stroke-width': '1', 'stroke-dasharray': '3 4', opacity: '.25', 'vector-effect': 'non-scaling-stroke' }), svg.firstChild); });
+    return h('div', null,
+      h('div', { class: 'sparkwrap' }, svg, h('span', { class: 'yax t' }, fmt(topV)), h('span', { class: 'yax b' }, fmt(botV))),
+      h('div', { class: 'row muted', style: 'justify-content:space-between' }, h('span', null, d0.slice(5) + '　' + fmt(points[0].value)), h('span', null, d1.slice(5) + '　' + fmt(points[points.length - 1].value))),
+      h('div', { class: 'muted axnote' }, '縱軸：這段期間的最低到最高（' + fmt(lo) + ' ～ ' + fmt(hi) + '），不是從 0 開始；' + (o.invert ? '線越高代表數字越小（越早、越低）。' : '線越高代表數字越大。') + '橫軸是日期，左舊右新。'));
   }
 
   function hoursText(min) { return min === null || min === undefined || isNaN(min) ? '—' : (min / 60).toFixed(1); }
@@ -1056,10 +1061,6 @@
       h('summary', null, '今日自評' + (filled ? '（已記）' : '（約 10 秒）')),
       CHECKIN_METRICS.map(function (m) { return scaleRow(m.label, m.low, m.high, cur[m.key] || 0, function (v) { setCheckin(date, m.key, v); }); }),
       extraNames.map(function (nm) { return scaleRow(nm, '低', '高', (cur.extra || {})[nm] || 0, function (v) { setCheckin(date, '', v, nm); }); }),
-      h('div', { class: 'flags' }, CHECKIN_FLAGS.map(function (f) {
-        var on = (cur.flags || []).indexOf(f.name) >= 0;
-        return h('button', { class: 'fl' + (on ? (f.good ? ' on' : ' bad') : ''), type: 'button', 'aria-pressed': String(on), onclick: function () { setCheckin(date, 'flag', f.name); } }, f.name);
-      })),
       h('div', { class: 'muted' }, '只是記錄，不影響完成率。累積幾週後在「健康」頁看和睡眠、運動的關係。'));
     box.addEventListener('toggle', function () { state.checkinOpen = { date: date, open: box.open }; });
     return box;
@@ -1198,7 +1199,7 @@
 
   // ---- 更多 (the pages that used to be separate tabs) ----
 
-  var SUB_PAGES = ['game', 'dreams', 'tasks', 'plan', 'settings'];
+  var SUB_PAGES = ['ledger', 'game', 'dreams', 'tasks', 'plan', 'settings'];
   function navTabOf(tab) { return SUB_PAGES.indexOf(tab) >= 0 ? 'more' : tab; }
 
   function goTab(tab) {
@@ -1210,6 +1211,7 @@
 
   function renderMore() {
     var items = [
+      ['ledger', '📒', '記錄', '記帳、餐費、日記、待辦、預算'],
       ['game', '🏅', '成就', '等級、星幣、成就、免責券'],
       ['dreams', '🌠', '夢想', '50 夢想清單與自動進度（資料在「50夢想」試算表）'],
       ['tasks', '🗂', '任務', '新增、修改、排序、設定核心任務'],
@@ -1221,7 +1223,6 @@
       nodes.push(h('button', { class: 'card more', onclick: function () { goTab(it[0]); } },
         h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, it[1]), it[2]), h('div', { class: 'muted' }, it[3])));
     });
-    nodes.push(h('p', { class: 'muted' }, '記帳、餐費、日記、待辦提醒和預算都在「記錄」。'));
     return nodes;
   }
 
@@ -1524,6 +1525,18 @@
     return el;
   }
 
+  function todoCard(t) {
+    var off = !t.enabled || t.done;
+    return swipeable(h('div', { class: 'card swipe' + (off ? ' inactive' : '') },
+      h('div', { class: 'name' }, t.text),
+      h('div', { class: 'muted' }, describeTodo(t) + (t.done ? '（已完成）' : t.enabled ? '' : '・不提醒') + '　‹ 左右滑可刪除 ›'),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        t.done ? null : h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { done: true } }, '已完成', function () { t.done = true; }); } }, '完成'),
+        h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { enabled: !t.enabled } }, t.enabled ? '不再提醒' : '會用 Telegram 提醒', function () { t.enabled = !t.enabled; }); } }, t.enabled ? '關提醒' : '開提醒'),
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn small danger', onclick: function () { removeTodo(t); } }, '刪除'))), function () { removeTodo(t); });
+  }
+
   function todoPane(L0) {
     var nodes = [];
     if (!state.todos) {
@@ -1532,23 +1545,26 @@
       if (state.todosError) nodes.push(h('button', { class: 'btn small', onclick: function () { state.todosError = ''; render(); } }, '重試'));
       return nodes;
     }
-    nodes.push(h('h2', null, '提醒清單'));
-    if (!state.todos.length) nodes.push(h('p', { class: 'muted' }, '還沒有自訂提醒。'));
-    state.todos.forEach(function (t) {
-      var off = !t.enabled || t.done;
-      nodes.push(swipeable(h('div', { class: 'card swipe' + (off ? ' inactive' : '') },
-        h('div', { class: 'name' }, t.text),
-        h('div', { class: 'muted' }, describeTodo(t) + (t.done ? '（已完成）' : t.enabled ? '' : '・不提醒') + '　‹ 左右滑可刪除 ›'),
-        h('div', { class: 'row', style: 'margin-top:8px' },
-          t.done ? null : h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { done: true } }, '已完成', function () { t.done = true; }); } }, '完成'),
-          h('button', { class: 'btn small', onclick: function () { todoDo('todoPatch', { id: t.id, patch: { enabled: !t.enabled } }, t.enabled ? '不再提醒' : '會用 Telegram 提醒', function () { t.enabled = !t.enabled; }); } }, t.enabled ? '關提醒' : '開提醒'),
-          h('span', { class: 'grow' }),
-          h('button', { class: 'btn small danger', onclick: function () { removeTodo(t); } }, '刪除'))), function () { removeTodo(t); }));
+    if (!state.todos.length) nodes.push(h('p', { class: 'muted' }, '還沒有待辦。'));
+    var g = groupTodos(state.todos, today());
+    [['今天', g.today], ['本週（7 天內）', g.week], ['之後', g.later]].forEach(function (sec) {
+      if (!sec[1].length) return;
+      nodes.push(h('h2', null, sec[0] + '　' + sec[1].length));
+      sec[1].forEach(function (t) { nodes.push(todoCard(t)); });
     });
+    if (state.todos.length && !g.today.length && !g.week.length && !g.later.length) nodes.push(h('p', { class: 'muted' }, '今天起沒有待辦。'));
+    if (g.past.length) {
+      var past = h('details', { class: 'pastbox', open: !!state.todoPastOpen },
+        h('summary', null, '過去／已完成　' + g.past.length),
+        g.past.map(function (t) { return todoCard(t); }));
+      past.addEventListener('toggle', function () { state.todoPastOpen = past.open; });
+      nodes.push(past);
+    }
     var d = todoDraft(L0), WD = ['日', '一', '二', '三', '四', '五', '六'];
-    nodes.push(h('h2', null, '新增提醒'));
+    nodes.push(h('h2', null, '新增'));
     var form = h('form', { class: 'card', onsubmit: function (ev) {
       ev.preventDefault();
+
       var todo = { text: d.text, time: d.time, repeat: d.repeat, date: d.date, weekdays: d.weekdays, monthDay: d.monthDay, enabled: d.remind !== false };
       try { validateTodo(todo); } catch (e) { toast(e.message); return; }
       api('todoSave', { todo: todo }).then(function () { d.text = ''; toast('已新增提醒'); state.todos = null; loadTodos(); })
@@ -1717,10 +1733,13 @@
         cells.push(h('i', { class: cls, title: date }, ok ? '✓' : String(d)));
       }
       var total = doneCountOf(t), ms = milestoneOf(total);
-      return h('div', { class: 'card ' + dimCls(t.dim) },
-        h('div', { class: 'row' }, h('div', { class: 'grow' }, nameLine(t)), h('span', { class: 'muted' }, due ? Math.round(done / due * 100) + '%・' + done + '/' + due : '—')),
+      state.habitOpen = state.habitOpen || {};
+      var card = h('details', { class: 'card habit ' + dimCls(t.dim), open: !!state.habitOpen[t.id] },
+        h('summary', { class: 'row' }, h('div', { class: 'grow' }, nameLine(t)), h('span', { class: 'muted' }, (ms.got ? ms.got + ' ' : '') + (due ? Math.round(done / due * 100) + '%・' + done + '/' + due : '—'))),
         h('div', { class: 'cal mini' }, cells),
-        h('div', { class: 'muted' }, (ms.got ? ms.got + ' ' : '') + '累計 ' + total + ' 次' + (ms.next ? '・再 ' + (ms.next - total) + ' 次到 ' + ms.next : '・已到 100 次')));
+        h('div', { class: 'muted' }, '累計 ' + total + ' 次' + (ms.next ? '・再 ' + (ms.next - total) + ' 次到 ' + ms.next : '・已到 100 次')));
+      card.addEventListener('toggle', function () { state.habitOpen[t.id] = card.open; });
+      return card;
     });
   }
 
@@ -1766,8 +1785,11 @@
     SKILLS.forEach(function (s) { nodes.push(skillCard(s, g)); });
     nodes.push(h('h2', null, '本月打卡'));
     nodes.push(monthCalendar(g));
-    nodes.push(h('h2', null, '各習慣本月'));
-    habitMonthCards().forEach(function (n) { nodes.push(n); });
+    var habitSec = h('details', { class: 'habitsec', open: !!state.habitSecOpen },
+      h('summary', null, '各習慣本月（點開看每個習慣的小日曆）'),
+      habitMonthCards());
+    habitSec.addEventListener('toggle', function () { state.habitSecOpen = habitSec.open; });
+    nodes.push(habitSec);
     if (g.clean.length) {
       nodes.push(h('h2', null, '乾淨天數'));
       nodes.push(h('div', { class: 'card' }, g.clean.map(function (c) {

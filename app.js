@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-04 v20';
+  var VERSION = '2026-11-04 v21';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -1964,22 +1964,40 @@
 
   // Reorder on screen at once, then send it through the same queue as check-ins (so it survives a slow or missing connection).
   // The old way waited for the server (moveTask, then a full bootstrap) before anything changed, which on a phone looked like "nothing happens".
+  // The list is shown by time slot like the today page (早, 午, 晚, 全天), so ▲▼ move a task past the next task of the SAME slot.
+  // Underneath that is the one global 排序 order, so the server is asked to move it one place at a time, as many times as needed.
   function moveTaskLocal(t, dir) {
-    var list = state.data.tasks, i = list.indexOf(t), j = i + (dir < 0 ? -1 : 1);
-    if (i < 0 || j < 0 || j >= list.length) return;
-    var other = list[j];
-    list[i] = other; list[j] = t;
+    var list = state.data.tasks, i = list.indexOf(t), step = dir < 0 ? -1 : 1, j = i + step;
+    if (i < 0) return;
+    while (j >= 0 && j < list.length && (list[j].slot || '不限') !== (t.slot || '不限')) j += step;
+    if (j < 0 || j >= list.length) return;
+    list.splice(i, 1);
+    list.splice(j, 0, t);
     list.forEach(function (x, k) { x.order = k + 1; });
-    enqueue('moveTask', { id: t.id, dir: dir < 0 ? -1 : 1 });
+    for (var n = Math.abs(j - i); n > 0; n--) enqueue('moveTask', { id: t.id, dir: step });
   }
 
   function renderTasks() {
     if (state.editing) return [h('h1', null, state.editing.id ? '編輯任務' : '新增任務'), renderTaskForm(state.editing)];
     var nodes = [h('div', { class: 'row' }, h('h1', { class: 'grow' }, '任務'), h('button', { class: 'btn primary', onclick: function () { state.editing = blankTask(); render(); } }, '＋ 新增'))];
-    state.data.tasks.forEach(function (t, i, all) {
+    SLOT_ORDER.forEach(function (slot) {
+      var inSlot = state.data.tasks.filter(function (x) { return (x.slot || '不限') === slot; });
+      if (!inSlot.length) return;
+      nodes.push(h('h2', null, slot === '不限' ? '全天' : slot));
+      inSlot.forEach(function (t, i, all) { nodes.push(taskCard(t, i, all)); });
+    });
+    if (!state.data.tasks.length) nodes.push(h('p', { class: 'muted' }, '還沒有任務。'));
+    nodes.push(h('h2', null, '模板（一鍵加入一組）'));
+    nodes.push(h('p', { class: 'muted' }, '加進來的都是「加分」，不會動到必做完成率和連續天數；之後在上面「編輯」可以改成必做。同名的任務不會重複加。'));
+    TEMPLATES.forEach(function (tp) { nodes.push(templateCard(tp)); });
+    return nodes;
+  }
+
+  function taskCard(t, i, all) {
+    {
       var extras = (hasOptions(t) ? '・' + (t.options.length - (isCounterTask(t) ? 1 : 0)) + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
       function move(dir) { moveTaskLocal(t, dir); }
-      nodes.push(h('div', { class: 'card item ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
+      return (h('div', { class: 'card item ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
         h('div', null, nameLine(t),
           h('div', null, h('span', { class: 'chip dc' }, t.dim), h('span', { class: 'chip' + (isBonus(t) ? '' : ' on') }, t.cls || '必做'), skillOf(t) ? h('span', { class: 'chip' }, '技能 ' + skillOf(t)) : null,
             h('span', { class: 'muted' }, freqText(t) + (t.slot !== '不限' ? '・' + t.slot : '') + (t.remind ? '・提醒' : '') + extras + (t.active ? '' : '・已暫停')))),
@@ -1992,12 +2010,7 @@
             if (!confirm('刪除「' + t.name + '」？打卡紀錄會保留。')) return;
             api('deleteTask', { id: t.id }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能刪除' : e.message); });
           } }, '刪除'))));
-    });
-    if (!state.data.tasks.length) nodes.push(h('p', { class: 'muted' }, '還沒有任務。'));
-    nodes.push(h('h2', null, '模板（一鍵加入一組）'));
-    nodes.push(h('p', { class: 'muted' }, '加進來的都是「加分」，不會動到必做完成率和連續天數；之後在上面「編輯」可以改成必做。同名的任務不會重複加。'));
-    TEMPLATES.forEach(function (tp) { nodes.push(templateCard(tp)); });
-    return nodes;
+    }
   }
 
   // Starter groups, all 加分 so adding one cannot change the streak math. Edit them here to match your own routines.

@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-04 v19';
+  var VERSION = '2026-11-04 v20';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -1962,12 +1962,23 @@
     return '每天';
   }
 
+  // Reorder on screen at once, then send it through the same queue as check-ins (so it survives a slow or missing connection).
+  // The old way waited for the server (moveTask, then a full bootstrap) before anything changed, which on a phone looked like "nothing happens".
+  function moveTaskLocal(t, dir) {
+    var list = state.data.tasks, i = list.indexOf(t), j = i + (dir < 0 ? -1 : 1);
+    if (i < 0 || j < 0 || j >= list.length) return;
+    var other = list[j];
+    list[i] = other; list[j] = t;
+    list.forEach(function (x, k) { x.order = k + 1; });
+    enqueue('moveTask', { id: t.id, dir: dir < 0 ? -1 : 1 });
+  }
+
   function renderTasks() {
     if (state.editing) return [h('h1', null, state.editing.id ? '編輯任務' : '新增任務'), renderTaskForm(state.editing)];
     var nodes = [h('div', { class: 'row' }, h('h1', { class: 'grow' }, '任務'), h('button', { class: 'btn primary', onclick: function () { state.editing = blankTask(); render(); } }, '＋ 新增'))];
     state.data.tasks.forEach(function (t, i, all) {
       var extras = (hasOptions(t) ? '・' + (t.options.length - (isCounterTask(t) ? 1 : 0)) + ' 個選項' : '') + (t.tierUp || t.tierDown ? '・有進階/最低' : '');
-      function move(dir) { api('moveTask', { id: t.id, dir: dir }).then(refresh).catch(function (e) { toast(e.network ? '需要網路才能調整順序' : e.message); }); }
+      function move(dir) { moveTaskLocal(t, dir); }
       nodes.push(h('div', { class: 'card item ' + dimCls(t.dim) + (t.active ? '' : ' inactive') },
         h('div', null, nameLine(t),
           h('div', null, h('span', { class: 'chip dc' }, t.dim), h('span', { class: 'chip' + (isBonus(t) ? '' : ' on') }, t.cls || '必做'), skillOf(t) ? h('span', { class: 'chip' }, '技能 ' + skillOf(t)) : null,

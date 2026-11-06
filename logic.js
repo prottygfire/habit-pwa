@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js and history.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, history.js and effort.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -1789,4 +1789,100 @@ function historyWithAuto(oldRows, data, today) {
     Object.keys(m).forEach(function (item) { rows.push({ month: ym, item: item, count: m[item], auto: true }); });
   }
   return rows;
+}
+
+// 努力一覽 (weekly effort overview): facts only, no targets and no score.
+// Pulls one Monday–Sunday week out of data the app already loads: 飯前／飯後運動 ticks, 訓練 rows, 限時挑戰, 手錶運動.
+// Data: {tasks, logs, train, challenges, workouts}; trainStart: 'YYYY-MM-DD' of training week 1 (for item titles). Depends on logic.js / diet.js.
+
+function isMealMoveTask_(t) {
+  return !!t && !isCounterTask(t) && /飯前|飯後/.test(t.name || '');
+}
+
+function effortDayList_(start) {
+  var out = [];
+  for (var i = 0; i < 7; i++) out.push(addDays(start, i));
+  return out;
+}
+
+// -> {start, end, days[7], mealRows, reps, train, watch, challenges, totals}
+function effortWeek(data, anyDateInWeek, trainStart) {
+  var start = addDays(anyDateInWeek, -(weekdayOf(anyDateInWeek) - 1)), end = addDays(start, 6);
+  var dates = effortDayList_(start), at = {};
+  var days = dates.map(function (d, i) {
+    at[d] = i;
+    return { date: d, meal: 0, trainN: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, any: false };
+  });
+  function inWeek(d) { return d >= start && d <= end; }
+
+  // 飯前／飯後: one row per task, a dot per day. Notes like 「開合跳*30、深蹲*30」 add up to rough rep totals.
+  var mealTasks = (data.tasks || []).filter(isMealMoveTask_), byId = {};
+  var mealRows = mealTasks.map(function (t) {
+    var r = { id: t.id, name: t.name, slot: t.slot || '', icon: iconOf(t), active: t.active !== false, done: [false, false, false, false, false, false, false], count: 0 };
+    byId[t.id] = r;
+    return r;
+  });
+  var repMap = {}, repOrder = [];
+  (data.logs || []).forEach(function (l) {
+    if (!inWeek(l.date) || !byId[l.taskId]) return;
+    var i = at[l.date], row = byId[l.taskId];
+    if (row.done[i]) return;
+    row.done[i] = true; row.count++; days[i].meal++; days[i].any = true;
+    parseNote(l.note).forEach(function (p) {
+      if (!repMap[p.base]) { repMap[p.base] = { move: p.base, times: 0, reps: 0 }; repOrder.push(p.base); }
+      repMap[p.base].times++; repMap[p.base].reps += p.count;
+    });
+  });
+  mealRows = mealRows.filter(function (r) { return r.count > 0 || r.active !== false; });
+
+  // 訓練: titles come from the menu of that day (the item ids are the same all weeks).
+  var titles = {};
+  dates.forEach(function (d) { trainingMenu(d, trainStart).items.forEach(function (it) { titles[it.id] = it.title; }); });
+  var trainMap = {}, trainOrder = [];
+  (data.train || []).forEach(function (r) {
+    if (!inWeek(r.date) || !r.item || r.item.charAt(0) === '_') return;
+    var i = at[r.date], m = Number(r.minutes) || 0;
+    days[i].trainN++; days[i].trainMin += m; days[i].any = true;
+    if (!trainMap[r.item]) { trainMap[r.item] = { item: r.item, title: titles[r.item] || r.item, sessions: 0, minutes: 0 }; trainOrder.push(r.item); }
+    trainMap[r.item].sessions++; trainMap[r.item].minutes += m;
+  });
+
+  // 手錶運動 (sheet 運動): by type.
+  var watchMap = {}, watchOrder = [];
+  (data.workouts || []).forEach(function (w) {
+    if (!inWeek(w.date)) return;
+    var i = at[w.date], m = Number(w.minutes) || 0;
+    days[i].watchMin += m; days[i].watchN++; days[i].any = true;
+    if (!watchMap[w.type]) { watchMap[w.type] = { type: w.type, minutes: 0, n: 0 }; watchOrder.push(w.type); }
+    watchMap[w.type].minutes += m; watchMap[w.type].n++;
+  });
+
+  // 限時挑戰: every draw is listed, only 成功 counts as done.
+  var chList = [];
+  (data.challenges || []).forEach(function (c) {
+    if (!inWeek(c.date)) return;
+    var i = at[c.date], ok = c.result === '成功';
+    days[i].chTry++;
+    if (ok) { days[i].chOk++; days[i].any = true; }
+    chList.push({ date: c.date, move: c.move, amount: c.amount, level: c.level, result: c.result, ok: ok });
+  });
+
+  var t = { mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0 };
+  days.forEach(function (d) {
+    t.mealDone += d.meal; t.trainSessions += d.trainN; t.trainMin += d.trainMin; t.watchMin += d.watchMin; t.watchN += d.watchN;
+    t.chOk += d.chOk; t.chTry += d.chTry; if (d.any) t.activeDays++;
+  });
+  t.items = t.mealDone + t.trainSessions + t.chOk;   // 手錶 sessions are left out: they are often the same workout as a 訓練 tick
+
+  return {
+    start: start, end: end, days: days, mealRows: mealRows,
+    reps: repOrder.map(function (k) { return repMap[k]; }),
+    train: trainOrder.map(function (k) { return trainMap[k]; }),
+    watch: watchOrder.map(function (k) { return watchMap[k]; }).sort(function (a, b) { return b.minutes - a.minutes; }),
+    challenges: chList, totals: t
+  };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { effortWeek: effortWeek };
 }

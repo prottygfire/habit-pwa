@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-06 v22';
+  var VERSION = '2026-11-06 v23';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -2213,6 +2213,16 @@
     return h('span', { class: 'ef-delta' }, d === 0 ? '和上週一樣' : (d > 0 ? '比上週多 ' : '比上週少 ') + (unit === 'min' ? minText(Math.abs(d)) : Math.abs(d)));
   }
 
+  // Each block can be folded; the choice is remembered on this phone only.
+  var effortFold = LS.get('habit.effortFold', {});
+  function foldCard(key, nameNodes, tag, body) {
+    return h('details', { class: 'card ef-fold', open: !effortFold[key], ontoggle: function (ev) {
+      if (ev.target.open) delete effortFold[key]; else effortFold[key] = 1;
+      LS.set('habit.effortFold', effortFold);
+    } }, h('summary', null, h('span', { class: 'name' }, nameNodes), tag ? h('span', { class: 'ef-tag' }, tag) : null), body);
+  }
+  function ico(c) { return h('span', { class: 'ico', 'aria-hidden': 'true' }, c); }
+
   function renderEffort() {
     var off = state.effortWeek || 0, mon = effortMonday(off), isNow = off === 0;
     var start = trainStart();
@@ -2229,9 +2239,10 @@
     nodes.push(h('div', { class: 'card ef-hero' },
       h('div', { class: 'ef-bigs' },
         big(t.items, ' 項', '完成的運動', effortDelta(t.items, pt.items)),
-        big(t.watchMin, ' 分', '手錶運動', effortDelta(t.watchMin, pt.watchMin, 'min')),
+        big(t.uniqueMin, ' 分', '運動時間', effortDelta(t.uniqueMin, pt.uniqueMin, 'min')),
         big(t.activeDays, ' / 7 天', '有動的日子', effortDelta(t.activeDays, pt.activeDays))),
-      h('div', { class: 'muted' }, '完成的運動＝飯前後 ' + t.mealDone + ' ＋ 訓練 ' + t.trainSessions + ' ＋ 挑戰成功 ' + t.chOk + '。手錶常和訓練是同一次，所以分開算。只是記錄，沒有目標。')));
+      h('div', { class: 'muted' }, '完成的運動＝飯前後 ' + t.mealDone + ' ＋ 訓練 ' + t.trainSessions + ' ＋ 挑戰成功 ' + t.chOk + '。' +
+        (t.sameN ? '運動時間裡，有 ' + t.sameN + ' 次訓練打勾和手錶紀錄是同一次，只算一次。' : '運動時間以手錶為準，沒有手錶的訓練打勾用你填的分鐘。') + '只是記錄，沒有目標。')));
 
     // Week strip: the bars are watch minutes, the three rows below count what else was done that day.
     var maxMin = Math.max(60, Math.max.apply(null, w.days.map(function (d) { return d.watchMin; })));
@@ -2247,18 +2258,17 @@
         h('span', { class: 'ef-wd' }, WEEKDAY_NAMES[i]),
         cell('ef-meal', d.meal), cell('ef-train', d.trainN), cell('ef-ch', d.chOk)));
     });
-    nodes.push(h('div', { class: 'card' },
-      h('div', { class: 'name' }, '週軌跡'),
+    nodes.push(foldCard('strip', '週軌跡', '', [
       h('div', { class: 'ef-strip' },
         h('div', { class: 'ef-legend' }, h('span', { class: 'ef-watch' }, '手錶長條（分）'), h('span', { class: 'ef-meal' }, '飯前後'), h('span', { class: 'ef-train' }, '訓練'), h('span', { class: 'ef-ch' }, '挑戰')),
         strip),
-      h('div', { class: 'muted' }, '長條是手錶記到的運動分鐘；下面三排是當天完成的項數。點一天看明細。')));
+      h('div', { class: 'muted' }, '長條是手錶記到的運動分鐘；下面三排是當天完成的項數。點一天看明細。')]));
 
     if (sel) nodes.push(effortDayCard(sel, w));
 
     // 飯前後
-    var mealCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '🤸'), '早中晚的飯前後運動'));
-    if (!w.mealRows.length) mealCard.appendChild(h('div', { class: 'muted' }, '任務頁沒有名稱含「飯前」「飯後」的任務。'));
+    var meal = [];
+    if (!w.mealRows.length) meal.push(h('div', { class: 'muted' }, '任務頁沒有名稱含「飯前」「飯後」的任務。'));
     var grid = h('div', { class: 'ef-mgrid' });
     grid.appendChild(h('span', null, ''));
     WEEKDAY_NAMES.forEach(function (n, i) { grid.appendChild(h('span', { class: 'ef-mh' + (w.days[i].date === today() ? ' now' : '') }, n)); });
@@ -2268,40 +2278,42 @@
       r.done.forEach(function (on, i) { grid.appendChild(h('span', { class: 'ef-dot' + (on ? ' on' : '') + (w.days[i].date > today() ? ' future' : ''), 'aria-label': on ? '有做' : '沒記錄' }, on ? '✓' : '')); });
       grid.appendChild(h('span', { class: 'ef-mcount' }, r.count + '/7'));
     });
-    if (w.mealRows.length) mealCard.appendChild(grid);
+    if (w.mealRows.length) meal.push(grid);
     if (w.reps.length) {
-      mealCard.appendChild(h('div', { class: 'ef-chips' }, w.reps.map(function (r) {
+      meal.push(h('div', { class: 'ef-chips' }, w.reps.map(function (r) {
         return h('span', { class: 'chip on' }, r.move + ' ' + r.times + ' 次' + (r.reps ? '・約 ' + r.reps + ' 下' : ''));
       })));
-      mealCard.appendChild(h('div', { class: 'muted' }, '「約」是把你勾選的動作量加總，不是實際計次。'));
+      meal.push(h('div', { class: 'muted' }, '「約」是把你勾選的動作量加總，不是實際計次。'));
     }
-    nodes.push(mealCard);
+    nodes.push(foldCard('meal', [ico('🤸'), '早中晚的飯前後運動'], t.mealDone + ' 次', meal));
 
     // 挑戰
-    var chCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '⏱'), '限時挑戰', h('span', { class: 'ef-tag' }, t.chOk + ' 成功 / 抽 ' + t.chTry + ' 次')));
-    if (!w.challenges.length) chCard.appendChild(h('div', { class: 'muted' }, '這週還沒抽過挑戰。'));
+    var ch = [];
+    if (!w.challenges.length) ch.push(h('div', { class: 'muted' }, '這週還沒抽過挑戰。'));
     w.challenges.forEach(function (c) {
-      chCard.appendChild(h('div', { class: 'ef-line' }, h('span', { class: 'muted' }, md(c.date)), h('span', { class: 'grow' }, c.move + ' ' + c.amount + (c.level ? '（' + c.level + '）' : '')), h('b', { class: c.ok ? 'ef-okmark' : 'muted' }, c.ok ? '成功' : (c.result || '—'))));
+      ch.push(h('div', { class: 'ef-line' }, h('span', { class: 'muted' }, md(c.date)), h('span', { class: 'grow' }, c.move + ' ' + c.amount + (c.level ? '（' + c.level + '）' : '')), h('b', { class: c.ok ? 'ef-okmark' : 'muted' }, c.ok ? '成功' : (c.result || '—'))));
     });
-    nodes.push(chCard);
+    nodes.push(foldCard('ch', [ico('⏱'), '限時挑戰'], t.chOk + ' 成功 / 抽 ' + t.chTry + ' 次', ch));
 
-    // 訓練
-    var trCard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '🏋️'), '訓練', h('span', { class: 'ef-tag' }, t.trainSessions + ' 項・' + minText(t.trainMin))));
-    if (!w.train.length) trCard.appendChild(h('div', { class: 'muted' }, '這週還沒有訓練紀錄。'));
-    w.train.forEach(function (r) {
-      trCard.appendChild(h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, r.title), h('span', { class: 'muted' }, r.sessions + ' 次' + (r.minutes ? '・' + minText(r.minutes) : ''))));
+    // 訓練: a tick that matches a watch session of the same day says so, so one run is never read as two
+    var tr = [];
+    if (!w.trainRows.length) tr.push(h('div', { class: 'muted' }, '這週還沒有訓練紀錄。'));
+    w.trainRows.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }).forEach(function (r) {
+      tr.push(h('div', { class: 'ef-line' }, h('span', { class: 'muted' }, md(r.date)), h('span', { class: 'grow' }, r.title,
+        r.watch ? h('span', { class: 'ef-same' }, '⌚ 同一次（手錶 ' + r.watch.type + ' ' + r.watch.minutes + ' 分）') : null),
+        h('span', { class: 'muted' }, r.watch ? minText(r.watch.minutes) : (r.minutes ? minText(r.minutes) : ''))));
     });
-    nodes.push(trCard);
+    nodes.push(foldCard('train', [ico('🏋️'), '訓練'], t.trainSessions + ' 項', tr));
 
     // 手錶
-    var wcard = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '⌚'), '手錶運動', h('span', { class: 'ef-tag' }, t.watchN + ' 次・' + minText(t.watchMin))));
-    if (!w.watch.length) wcard.appendChild(h('div', { class: 'muted' }, '這週沒有手錶紀錄（要手機的「健康同步」App 傳上來）。'));
+    var wk = [];
+    if (!w.watch.length) wk.push(h('div', { class: 'muted' }, '這週沒有手錶紀錄（要手機的「健康同步」App 傳上來）。'));
     var wmax = w.watch.length ? w.watch[0].minutes : 1;
     w.watch.forEach(function (r) {
-      wcard.appendChild(h('div', { class: 'ef-wrow' }, h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, r.type), h('span', { class: 'muted' }, r.n + ' 次・' + minText(r.minutes))),
+      wk.push(h('div', { class: 'ef-wrow' }, h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, r.type, r.linked ? h('span', { class: 'ef-same' }, '其中 ' + r.linked + ' 次也在訓練打勾') : null), h('span', { class: 'muted' }, r.n + ' 次・' + minText(r.minutes))),
         h('div', { class: 'bar thin' }, h('i', { style: 'width:' + Math.round(r.minutes / wmax * 100) + '%' }))));
     });
-    nodes.push(wcard);
+    nodes.push(foldCard('watch', [ico('⌚'), '手錶運動'], t.watchN + ' 次・' + minText(t.watchMin), wk));
     return nodes;
   }
 
@@ -2313,12 +2325,11 @@
       var lg = state.data.logs.filter(function (l) { return l.date === date && l.taskId === r.id; })[0];
       line('ef-meal', r.name, lg && lg.note ? lg.note : '');
     });
-    dget('train').filter(function (r) { return r.date === date && r.item && r.item.charAt(0) !== '_'; }).forEach(function (r) {
-      var tt = w.train.filter(function (x) { return x.item === r.item; })[0];
-      line('ef-train', tt ? tt.title : r.item, r.minutes ? minText(Number(r.minutes)) : '');
+    w.trainRows.filter(function (r) { return r.date === date; }).forEach(function (r) {
+      line('ef-train', r.title + (r.watch ? '（手錶 ' + r.watch.type + '，同一次）' : ''), r.watch ? minText(r.watch.minutes) : (r.minutes ? minText(r.minutes) : ''));
     });
-    dget('challenges').filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-ch', r.move + ' ' + r.amount, r.result); });
-    dget('workouts').filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-watch', r.type, minText(r.minutes)); });
+    w.challenges.filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-ch', r.move + ' ' + r.amount, r.result); });
+    w.watchRows.filter(function (r) { return r.date === date && !r.trainItem; }).forEach(function (r) { line('ef-watch', r.type, minText(r.minutes)); });
     if (!any) box.appendChild(h('div', { class: 'muted' }, '這天沒有運動紀錄。'));
     return box;
   }

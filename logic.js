@@ -1799,6 +1799,15 @@ function isMealMoveTask_(t) {
   return !!t && !isCounterTask(t) && /飯前|飯後/.test(t.name || '');
 }
 
+// Which watch types a 訓練 item can come from (ids from trainingMenu / extraStrengthCard).
+function effortWatchTypes_(item) {
+  if (/^run/.test(item)) return ['跑步', '跑步機', '走路', '健行', '登階', '爬樓梯機', '橢圓機', '室內單車'];
+  if (item === 'yoga') return ['瑜伽'];
+  if (item === 'kb-interval') return ['HIIT'];
+  if (/^(home|strength|extra)/.test(item)) return ['肌力訓練', '重量訓練', '徒手訓練'];
+  return [];
+}
+
 function effortDayList_(start) {
   var out = [];
   for (var i = 0; i < 7; i++) out.push(addDays(start, i));
@@ -1835,26 +1844,39 @@ function effortWeek(data, anyDateInWeek, trainStart) {
   });
   mealRows = mealRows.filter(function (r) { return r.count > 0 || r.active !== false; });
 
-  // 訓練: titles come from the menu of that day (the item ids are the same all weeks).
-  var titles = {};
-  dates.forEach(function (d) { trainingMenu(d, trainStart).items.forEach(function (it) { titles[it.id] = it.title; }); });
-  var trainMap = {}, trainOrder = [];
-  (data.train || []).forEach(function (r) {
-    if (!inWeek(r.date) || !r.item || r.item.charAt(0) === '_') return;
-    var i = at[r.date], m = Number(r.minutes) || 0;
-    days[i].trainN++; days[i].trainMin += m; days[i].any = true;
-    if (!trainMap[r.item]) { trainMap[r.item] = { item: r.item, title: titles[r.item] || r.item, sessions: 0, minutes: 0 }; trainOrder.push(r.item); }
-    trainMap[r.item].sessions++; trainMap[r.item].minutes += m;
-  });
-
-  // 手錶運動 (sheet 運動): by type.
-  var watchMap = {}, watchOrder = [];
+  // 手錶運動 (sheet 運動) first, so a 訓練 tick can claim the watch session it came from.
+  var watchRows = [];
   (data.workouts || []).forEach(function (w) {
     if (!inWeek(w.date)) return;
     var i = at[w.date], m = Number(w.minutes) || 0;
     days[i].watchMin += m; days[i].watchN++; days[i].any = true;
-    if (!watchMap[w.type]) { watchMap[w.type] = { type: w.type, minutes: 0, n: 0 }; watchOrder.push(w.type); }
-    watchMap[w.type].minutes += m; watchMap[w.type].n++;
+    watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '' });
+  });
+
+  // 訓練: titles come from the menu of that day (the item ids are the same all weeks).
+  // A tick and a watch session on the same day with a compatible type count as ONE workout (the watch's minutes win).
+  var titles = {};
+  dates.forEach(function (d) { trainingMenu(d, trainStart).items.forEach(function (it) { titles[it.id] = it.title; }); });
+  var trainMap = {}, trainOrder = [], trainRows = [], sameMin = 0, trainOnlyMin = 0;
+  (data.train || []).forEach(function (r) {
+    if (!inWeek(r.date) || !r.item || r.item.charAt(0) === '_') return;
+    var i = at[r.date], m = Number(r.minutes) || 0, title = titles[r.item] || r.item;
+    days[i].trainN++; days[i].trainMin += m; days[i].any = true;
+    var types = effortWatchTypes_(r.item), best = null;
+    watchRows.forEach(function (w) {
+      if (w.date !== r.date || w.trainItem || types.indexOf(w.type) < 0) return;
+      if (!best || Math.abs(w.minutes - m) < Math.abs(best.minutes - m)) best = w;
+    });
+    if (best) { best.trainItem = r.item; best.trainTitle = title; sameMin += m; } else trainOnlyMin += m;
+    trainRows.push({ date: r.date, item: r.item, title: title, minutes: m, watch: best ? { type: best.type, minutes: best.minutes } : null });
+    if (!trainMap[r.item]) { trainMap[r.item] = { item: r.item, title: title, sessions: 0, minutes: 0, withWatch: 0 }; trainOrder.push(r.item); }
+    trainMap[r.item].sessions++; trainMap[r.item].minutes += m; if (best) trainMap[r.item].withWatch++;
+  });
+
+  var watchMap = {}, watchOrder = [];
+  watchRows.forEach(function (w) {
+    if (!watchMap[w.type]) { watchMap[w.type] = { type: w.type, minutes: 0, n: 0, linked: 0 }; watchOrder.push(w.type); }
+    watchMap[w.type].minutes += w.minutes; watchMap[w.type].n++; if (w.trainItem) watchMap[w.type].linked++;
   });
 
   // 限時挑戰: every draw is listed, only 成功 counts as done.
@@ -1867,11 +1889,13 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     chList.push({ date: c.date, move: c.move, amount: c.amount, level: c.level, result: c.result, ok: ok });
   });
 
-  var t = { mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0 };
+  var t = { mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0, sameN: 0, uniqueMin: 0 };
   days.forEach(function (d) {
     t.mealDone += d.meal; t.trainSessions += d.trainN; t.trainMin += d.trainMin; t.watchMin += d.watchMin; t.watchN += d.watchN;
     t.chOk += d.chOk; t.chTry += d.chTry; if (d.any) t.activeDays++;
   });
+  t.sameN = watchRows.filter(function (w) { return w.trainItem; }).length;
+  t.uniqueMin = t.watchMin + trainOnlyMin;   // one workout is counted once: watch minutes, plus ticks that have no watch session
   t.items = t.mealDone + t.trainSessions + t.chOk;   // 手錶 sessions are left out: they are often the same workout as a 訓練 tick
 
   return {
@@ -1879,7 +1903,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     reps: repOrder.map(function (k) { return repMap[k]; }),
     train: trainOrder.map(function (k) { return trainMap[k]; }),
     watch: watchOrder.map(function (k) { return watchMap[k]; }).sort(function (a, b) { return b.minutes - a.minutes; }),
-    challenges: chList, totals: t
+    trainRows: trainRows, watchRows: watchRows, challenges: chList, totals: t
   };
 }
 

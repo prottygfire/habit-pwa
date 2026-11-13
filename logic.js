@@ -1736,6 +1736,59 @@ function dietPeriod(tasks, logs, start, end) {
   return out;
 }
 
+// ---- 本月飲食回顧（健康頁）: positives, negatives and plain-language advice for one month ----
+var DIET_NAME = { '🥤': '含糖飲料', '🍟': '炸物', '🍷': '酒', '🍩': '甜點', '🥗': '健康餐', '🥬': '足量蔬菜', '🍎': '水果', '🍖': '足量蛋白' };
+var DIET_MIN_DAYS = 7;   // below this many logged days a "rate" says little, so advice only asks for more logging
+
+function pct0_(x) { return Math.round(x * 100); }
+
+// Month 'YYYY-MM' up to today (a running month is judged only on the days that have passed). prev = the whole previous month.
+function dietReview(tasks, logs, month, today) {
+  var last = month + '-' + (daysInMonth_(month) < 10 ? '0' : '') + daysInMonth_(month);
+  var end = last < today ? last : today;
+  var pm = addDays(month + '-01', -1);
+  var cur = dietPeriod(tasks, logs, month + '-01', end);
+  var prev = dietPeriod(tasks, logs, monthKey(pm) + '-01', pm);
+  var out = { month: month, cur: cur, prev: prev, items: [], advice: [] };
+  function item(e, good) {
+    var rate = cur.days ? cur.dayCounts[e] / cur.days : 0;
+    var prevRate = prev.days ? prev.dayCounts[e] / prev.days : null;
+    return { emoji: e, name: DIET_NAME[e], good: good, total: cur.totals[e], days: cur.dayCounts[e], rate: rate, prevRate: prevRate };
+  }
+  DIET_POS.concat(DIET_INFO).forEach(function (e) { out.items.push(item(e, true)); });
+  DIET_NEG.forEach(function (e) { out.items.push(item(e, false)); });
+  if (!cur.days) { out.advice.push('本月還沒有飲食記錄。在今日頁點「早餐飲食」等任務記錄每餐，這裡就會統計並給建議。'); return out; }
+  if (cur.days < DIET_MIN_DAYS) { out.advice.push('本月只記了 ' + cur.days + ' 天，樣本還少，先記滿 ' + DIET_MIN_DAYS + ' 天以上，比例和建議才有參考價值。'); }
+  var by = {};
+  out.items.forEach(function (it) { by[it.emoji] = it; });
+  function tag(it) { return it.name + '出現在 ' + it.days + ' 天（' + pct0_(it.rate) + '%）'; }
+  var enough = cur.days >= DIET_MIN_DAYS;
+  if (enough) {
+    if (by['🥤'].rate >= 0.4) out.advice.push('🥤 ' + tag(by['🥤']) + '。飲料是最容易砍的熱量：先改成無糖茶、氣泡水，每週至少 3 天完全不喝含糖飲料。');
+    else if (by['🥤'].days) out.advice.push('🥤 含糖飲料 ' + by['🥤'].days + ' 天，頻率還好，維持「想喝才喝」，不要變成每餐配飲料。');
+    if (by['🍟'].rate >= 0.3) out.advice.push('🍟 ' + tag(by['🍟']) + '。炸物偏多，試著固定「一週最多 2 次」，其餘改成烤、滷、蒸，或只點小份。');
+    if (by['🍷'].rate >= 0.2) out.advice.push('🍷 ' + tag(by['🍷']) + '。酒會拖累睡眠與恢復，也容易帶出消夜；先訂「每週至少 4 天不喝」。');
+    if (by['🍩'].rate >= 0.3) out.advice.push('🍩 ' + tag(by['🍩']) + '。甜點可以留給固定的一天，平日用水果代替。');
+    if (by['🥬'].rate < 0.5) out.advice.push('🥬 足量蔬菜只有 ' + pct0_(by['🥬'].rate) + '% 的天數達標。每天先確定午或晚餐有一個拳頭大的蔬菜，是最划算的改善。');
+    if (by['🍖'].rate < 0.6) out.advice.push('🍖 足量蛋白只有 ' + pct0_(by['🍖'].rate) + '% 的天數。有重訓的人蛋白不足會影響恢復，早餐加蛋、豆漿或無糖優格最容易補。');
+    if (by['🍎'].rate < 0.4) out.advice.push('🍎 水果只有 ' + pct0_(by['🍎'].rate) + '% 的天數。放一份在飯後或下午點心，順便取代甜點。');
+  }
+  var negDays = DIET_NEG.reduce(function (s, e) { return s + cur.dayCounts[e]; }, 0);
+  if (enough && negDays === 0) out.advice.push('這個月沒有任何負向項目，飲食很乾淨，維持就好。');
+  if (prev.days >= DIET_MIN_DAYS && cur.days >= DIET_MIN_DAYS) {
+    var d = Math.round((cur.score100 - prev.score100) * 10) / 10;
+    if (d >= 3) out.advice.push('📈 飲食分 ' + cur.score100 + '，比上月（' + prev.score100 + '）進步 ' + d + ' 分。');
+    else if (d <= -3) out.advice.push('📉 飲食分 ' + cur.score100 + '，比上月（' + prev.score100 + '）退步 ' + (-d) + ' 分，看看下面哪個負向項目變多。');
+    var worst = null;
+    DIET_NEG.forEach(function (e) {
+      var it = by[e], diff = it.prevRate === null ? 0 : it.rate - it.prevRate;
+      if (diff >= 0.15 && (!worst || diff > worst.diff)) worst = { it: it, diff: diff };
+    });
+    if (worst) out.advice.push('⚠️ ' + worst.it.emoji + worst.it.name + '的天數比例比上月多了 ' + pct0_(worst.diff) + ' 個百分點，是本月最該先處理的一項。');
+  }
+  return out;
+}
+
 // 歷史對照: months before HISTORY_FROM are the hand-written numbers of the 「歷史月統計」 tab; from HISTORY_FROM on, the same kind of
 // numbers are worked out from the app's own records (training tab, task check-ins, 小失誤, 飲食狀態). Pure helpers; concatenated by build.py.
 

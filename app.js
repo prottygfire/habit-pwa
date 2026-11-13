@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-06 v23';
+  var VERSION = '2026-11-13 v24';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -1027,8 +1027,35 @@
       var fl2 = CHECKIN_FLAGS.filter(function (f) { return cs.flags[f.name]; }).map(function (f) { return f.name + ' ' + cs.flags[f.name] + ' 天'; });
       if (fl2.length) cCard.appendChild(h('div', { class: 'muted' }, fl2.join('・')));
     }
+    nodes.push(dietMonthCard());
     nodes.push(cCard);
     return nodes;
+  }
+
+  // 本月飲食一覽（健康頁）: positives, negatives, vs last month, and advice. Pure maths lives in diet.js (dietReview).
+  function dietMonthCard() {
+    var t0 = today(), c = ctx();
+    var card = h('div', { class: 'card' }, h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '🍽️'), '本月飲食（' + monthKey(t0) + '）'));
+    if (!c.tasks.some(function (t) { return dietMealOf(t); })) {
+      card.appendChild(h('div', { class: 'muted' }, '還沒有「早餐飲食」等任務。到任務頁新增後，每餐記錄就會在這裡統計。'));
+      return card;
+    }
+    var r = dietReview(c.tasks, c.logs, monthKey(t0), t0);
+    if (r.cur.days) {
+      var cmp = r.prev.days ? '（上月 ' + r.prev.score100 + '）' : '';
+      card.appendChild(h('div', { class: 'stat' }, h('span', null, '飲食分 ', h('b', null, r.cur.score100), cmp), h('span', { class: 'muted' }, '記了 ' + r.cur.days + ' 天・日均 ' + r.cur.avgDaily + ' / 16')));
+      [['👍 正向（越多越好）', true], ['👎 負向（越少越好）', false]].forEach(function (g) {
+        card.appendChild(h('div', { class: 'muted', style: 'margin-top:10px' }, g[0]));
+        r.items.filter(function (it) { return it.good === g[1]; }).forEach(function (it) {
+          var vs = it.prevRate === null ? '' : '　上月 ' + Math.round(it.prevRate * 100) + '%';
+          card.appendChild(bar(it.emoji + ' ' + it.name, it.days + ' 天（' + Math.round(it.rate * 100) + '%）・共 ' + it.total + ' 次' + vs, it.rate, g[1] ? '健康' : '情緒'));
+        });
+      });
+    }
+    card.appendChild(h('div', { class: 'name', style: 'margin-top:12px' }, '建議'));
+    r.advice.forEach(function (a) { card.appendChild(h('div', { class: 'muted', style: 'margin-top:4px' }, a)); });
+    card.appendChild(h('div', { class: 'muted', style: 'margin-top:8px' }, '比例＝出現的天數 ÷ 有記錄的天數。建議依比例自動產生，是生活參考，不是醫療建議。'));
+    return card;
   }
 
   // ---- 每日自評 ----

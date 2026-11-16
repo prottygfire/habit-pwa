@@ -295,6 +295,23 @@ function backfillPending(tasks, today, idx, leave) {
   return out;
 }
 
+// 一次補登: for today and the last GRACE_DAYS days (oldest first) the tasks still open that day, [{date, items: [{task, simple}]}].
+// simple = ticks with one tap; tasks with options, the diet counters and the 記帳／餐費／日記 forms need their own screen.
+function catchupDays(tasks, today, idx, leave) {
+  var out = [];
+  for (var i = GRACE_DAYS; i >= 0; i--) {
+    var d = addDays(today, -i), items = [];
+    if (leave && leave[d]) continue;
+    for (var k = 0; k < tasks.length; k++) {
+      var t = tasks[k];
+      if (!t.active || isAccumFreq(t.freq) || !isScheduled(t, d) || isDone(t, d, idx) || isWaived(t, d, idx)) continue;
+      items.push({ task: t, simple: !(t.options && t.options.length) && !/記帳|餐費|日記/.test(t.name || '') });
+    }
+    if (items.length) out.push({ date: d, items: items });
+  }
+  return out;
+}
+
 // Per-dimension completion of 必做 fixed tasks over [start, min(end, today)].
 function dimensionRates(tasks, start, end, today, idx, leave) {
   var out = {}, last = end < today ? end : today;

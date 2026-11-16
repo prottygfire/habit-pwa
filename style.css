@@ -271,3 +271,7 @@ td.auto { font-weight: 600; }
 .chk input { width: 18px; height: 18px; vertical-align: -3px; margin-right: 6px; }
 .chk.missed { color: var(--muted); }
 .credit, .moved { font-size: .8125rem; margin-top: 4px; }
+
+/* 一次補登 */
+.catchrow { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 12px; }
+.catchrow.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

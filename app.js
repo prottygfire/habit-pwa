@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-16 v28';
+  var VERSION = '2026-11-17 v29';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -13,7 +13,7 @@
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
   var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
-  var TABS = ['today', 'ledger', 'train', 'effort', 'health', 'more', 'game', 'dreams', 'tasks', 'plan', 'settings'];
+  var TABS = ['today', 'ledger', 'train', 'effort', 'health', 'more', 'game', 'rewards', 'dreams', 'tasks', 'plan', 'settings'];
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -600,6 +600,49 @@
     return modalShell(item.title, form);
   }
 
+  // 一次補登: one sheet for today and the last two days. Tap the items you did, then one 送出; nothing you leave alone is marked or penalised.
+  function catchupModal() {
+    var c = ctx(), t0 = today(), days = catchupDays(c.tasks, t0, c.idx, c.leave), sel = {};
+    var body = h('div');
+    function dayLabel(d) { return d === t0 ? '今天' : d === addDays(t0, -1) ? '昨天' : '前天'; }
+    function count() { return Object.keys(sel).length; }
+    function setDay(d, on) { days.forEach(function (day) { if (day.date === d) day.items.forEach(function (i) { if (i.simple) { if (on) sel[d + '|' + i.task.id] = true; else delete sel[d + '|' + i.task.id]; } }); }); paint(); }
+    function paint() {
+      body.textContent = '';
+      days.forEach(function (day) {
+        var simple = day.items.filter(function (i) { return i.simple; }), other = day.items.filter(function (i) { return !i.simple; });
+        var allOn = simple.length && simple.every(function (i) { return sel[day.date + '|' + i.task.id]; });
+        body.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, h('b', { class: 'grow' }, dayLabel(day.date) + ' ' + md(day.date)),
+          simple.length ? h('button', { class: 'btn small', type: 'button', onclick: function () { setDay(day.date, !allOn); } }, allOn ? '取消全選' : '這天全選') : null));
+        simple.forEach(function (i) {
+          var k = day.date + '|' + i.task.id, on = !!sel[k];
+          body.appendChild(h('button', { class: 'btn catchrow' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on),
+            onclick: function () { if (sel[k]) delete sel[k]; else sel[k] = true; paint(); } },
+            (on ? '✓ ' : '') + iconOf(i.task) + ' ' + i.task.name + (isBonus(i.task) ? '（加分）' : '')));
+        });
+        if (other.length) {
+          body.appendChild(h('div', { class: 'muted', style: 'margin:6px 0' }, '要填內容或選項的，到那天的頁面處理：' + other.map(function (i) { return i.task.name; }).join('、') + '　',
+            h('button', { class: 'btn small', type: 'button', onclick: function () { state.modal = null; renderModal(); state.tab = 'today'; state.date = day.date; render(); } }, '去' + dayLabel(day.date))));
+        }
+      });
+      if (!days.length) body.appendChild(h('p', { class: 'muted' }, '這三天都處理完了。'));
+      send.textContent = '送出（' + count() + ' 項）';
+      send.disabled = !count();
+    }
+    var send = h('button', { class: 'btn primary grow', type: 'button', onclick: function () {
+      var picks = [];
+      days.forEach(function (day) { day.items.forEach(function (i) { if (sel[day.date + '|' + i.task.id]) picks.push([i.task, day.date]); }); });
+      state.modal = null; renderModal();
+      picks.forEach(function (p) { checkTask(p[0], p[1], '標準', ''); });
+      toast('已補登 ' + picks.length + ' 項');
+    } }, '送出');
+    paint();
+    return modalShell('一次補登', h('div', null,
+      h('p', { class: 'muted' }, '點你做了的項目，最後按一次「送出」。沒點的不會記，也不扣分；補的點數和當天打勾一樣。'),
+      body,
+      h('div', { class: 'row', style: 'margin-top:14px' }, send, h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉'))));
+  }
+
   function renderModal() {
     var host = document.getElementById('modal');
     if (!state.modal || !state.data) { host.textContent = ''; host.dataset.key = ''; return; }
@@ -608,7 +651,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
+    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'catchup' ? catchupModal() : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -714,6 +757,8 @@
         h('div', { class: 'muted' }, '必做 ' + st.done + '/' + st.due + (bs.due ? '・加分 ' + bs.done + '/' + bs.due : '') + '（必做完成 ≥ 80% 才算連續一天）')),
       h('button', { class: 'btn small' + (onLeave ? ' primary' : ''), onclick: function () { toggleLeave(date, !onLeave); } }, onLeave ? '已請假（點一下取消）' : '這天請假（不影響連續天數）')
     ];
+    var openN = isToday ? catchupDays(c.tasks, date, c.idx, c.leave).reduce(function (n, d) { return n + d.items.filter(function (i) { return i.simple; }).length; }, 0) : 0;
+    if (openN) nodes.push(h('button', { class: 'btn small', style: 'margin-left:6px', onclick: function () { state.modal = { type: 'catchup', task: { id: 'catchup' }, date: date }; renderModal(); } }, '🧾 一次補登（' + openN + ' 項可一鍵勾）'));
     if (isToday) {
       var dn = diaryNudge(c.tasks, c.logs, date, c.idx, c.leave);
       if (dn) nodes.splice(2, 0, diaryNudgeCard(dn, date));
@@ -1349,7 +1394,7 @@
 
   // ---- 更多 (the pages that used to be separate tabs) ----
 
-  var SUB_PAGES = ['ledger', 'game', 'dreams', 'tasks', 'plan', 'settings'];
+  var SUB_PAGES = ['ledger', 'game', 'rewards', 'dreams', 'tasks', 'plan', 'settings'];
   function navTabOf(tab) { return SUB_PAGES.indexOf(tab) >= 0 ? 'more' : tab; }
 
   function goTab(tab) {
@@ -1362,7 +1407,8 @@
   function renderMore() {
     var items = [
       ['ledger', '📒', '記錄', '記帳、餐費、日記、待辦、預算'],
-      ['game', '🏅', '成就', '等級、星幣、成就、免責券'],
+      ['game', '🏅', '成就', '技能等級、本月打卡、成就徽章'],
+      ['rewards', '⭐', '星幣與兌換', '星幣餘額、兌換獎勵、免責券、兌換紀錄'],
       ['dreams', '🌠', '夢想', '50 夢想清單與自動進度（資料在「50夢想」試算表）'],
       ['tasks', '🗂', '任務', '新增、修改、排序、設定核心任務'],
       ['plan', '📅', '月/季', '三大目標、月回顧、月/季規劃'],
@@ -1998,10 +2044,8 @@
     var nodes = [
       h('h1', null, '成就'),
       h('div', { class: 'card coinbox' },
-        h('div', { class: 'row' },
-          h('div', { class: 'grow' }, h('div', { class: 'big' }, '⭐ ', h('b', null, g.coins.balance)), h('div', { class: 'muted' }, '累計賺到 ' + g.coins.earned + '，已兌換 ' + g.coins.spent)),
-          h('button', { class: 'btn primary', onclick: function () { state.modal = { type: 'redeem', task: { id: 'redeem' }, date: t0 }; renderModal(); } }, '兌換獎勵')),
-        h('div', { class: 'muted', style: 'margin-top:8px' }, '🎫 免責券 ' + g.tickets + ' 張・總等級 ' + g.totalLevel + '／100「' + g.totalTitle + '」・目前連續 ' + g.streak.current + ' 天（最長 ' + g.streak.best + '）・完美日 ' + g.perfectCount + ' 次'))
+        h('div', { class: 'muted' }, '總等級 ' + g.totalLevel + '／100「' + g.totalTitle + '」・目前連續 ' + g.streak.current + ' 天（最長 ' + g.streak.best + '）・完美日 ' + g.perfectCount + ' 次'),
+        h('div', { class: 'muted', style: 'margin-top:6px' }, '星幣、免責券與兌換在「更多 → 星幣與兌換」。'))
     ];
     nodes.push(h('h2', null, '技能'));
     SKILLS.forEach(function (s) { nodes.push(skillCard(s, g)); });
@@ -2021,6 +2065,20 @@
       }), h('div', { class: 'muted' }, '當天沒記這項、而且當天有打卡，才算乾淨的一天。')));
     }
     badgeWall(g).forEach(function (n) { nodes.push(n); });
+    return nodes;
+  }
+
+  // 星幣與兌換 (moved here from 成就 on 2026-11-16: nothing had been redeemed in four weeks, so it no longer takes room on the 成就 page)
+  function renderRewards() {
+    var g = game(), t0 = today();
+    var nodes = [
+      h('h1', null, '星幣與兌換'),
+      h('div', { class: 'card coinbox' },
+        h('div', { class: 'row' },
+          h('div', { class: 'grow' }, h('div', { class: 'big' }, '⭐ ', h('b', null, g.coins.balance)), h('div', { class: 'muted' }, '累計賺到 ' + g.coins.earned + '，已兌換 ' + g.coins.spent)),
+          h('button', { class: 'btn primary', onclick: function () { state.modal = { type: 'redeem', task: { id: 'redeem' }, date: t0 }; renderModal(); } }, '兌換獎勵')),
+        h('div', { class: 'muted', style: 'margin-top:8px' }, '🎫 免責券 ' + g.tickets + ' 張（到「今日」頁，在要抵免的必做任務旁按 🎫）'))
+    ];
     var reds = dget('redemptions').slice().reverse();
     nodes.push(h('h2', null, '兌換紀錄'));
     if (!reds.length) nodes.push(h('p', { class: 'muted' }, '還沒有兌換過。'));
@@ -2563,7 +2621,7 @@
     var tab = state.cfg ? state.tab : 'settings';
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
-    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'effort' ? renderEffort() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'dreams' ? renderDreams() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
+    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'effort' ? renderEffort() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'rewards' ? renderRewards() : tab === 'dreams' ? renderDreams() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
     var focusId = document.activeElement && document.activeElement.id;
     var keepY = window.scrollY;
     view.textContent = '';

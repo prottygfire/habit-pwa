@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-16 v26';
+  var VERSION = '2026-11-16 v27';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -402,7 +402,12 @@
   // The rolling week plan for the week of `date` (what was done is credited, the rest is re-planned from today on).
   // The strength table (逐動作記錄) has no tick of its own, so those days are added as home-a / home-b ticks for the plan.
   function trainRowsAll() { return trainRows().concat(homeStrengthTrainRows(trainRows(), dget('strength'), dget('strengthMoves'))); }
-  function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today()); }
+  // The Zone 2 heart-rate band for watch walks: sheet 設定 zone2Hr ("113,132"), same default as the backend.
+  function zone2Band() {
+    var m = /^\s*(\d+)\s*,\s*(\d+)\s*$/.exec((state.data.settings && state.data.settings.zone2Hr) || '');
+    return m && Number(m[1]) < Number(m[2]) ? [Number(m[1]), Number(m[2])] : null;
+  }
+  function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today(), zone2Band() || undefined); }
   function trainOn(id, date) { return trainRows().filter(function (r) { return r.item === id && r.date === date; })[0]; }
   function trainStateOn(date) { var r = trainOn('_state', date); return r ? r.version : ''; }
   function runTask() {
@@ -898,20 +903,33 @@
   }
 
   // 這週算進來的活動: where each credit came from; a watch session can be turned off ("不抵") when it should not count.
+  function offsetText(a) {
+    if (a.off) return '你選了「不抵」，這筆不算';
+    if (a.kind === 'other') return '只記錄，不抵任何項目';
+    var parts = (a.offsets || []).map(function (o) {
+      return o.title + (o.minutes !== undefined ? '（用掉 ' + o.minutes + ' 分）' : o.units < 1 ? '（半次）' : '');
+    });
+    var t = parts.length ? '抵了：' + parts.join('、') : '';
+    if (a.extra > 0) t += (t ? '；' : '') + '多出 ' + a.extra + ' 分，沒有項目可抵，仍算進本週有氧總量';
+    return t || '本週沒有對應的項目可抵，仍算進本週的量';
+  }
+
+  // 這週算進來的運動: every counted activity and what it paid for; a watch session can be turned off ("不抵") when it should not count.
   function activitiesCard(plan) {
     var list = plan.activities;
     if (!list.length) return h('div', { class: 'card muted' }, '這週還沒有算進來的運動。手錶的運動與你勾的訓練會自動抵掉對應的項目。');
     return h('div', { class: 'card' }, h('div', { class: 'name' }, '這週算進來的運動'),
       list.map(function (a) {
         var key = '_no-' + a.kind, canOff = a.source === 'watch' && NO_CREDIT_KINDS_.indexOf(a.kind) >= 0;
-        return h('div', { class: 'row', style: 'margin:6px 0' }, h('div', { class: 'grow' + (a.off ? ' muted' : '') }, a.label + (a.off ? '（不抵）' : '')),
+        return h('div', { class: 'row', style: 'margin:8px 0' },
+          h('div', { class: 'grow' }, h('div', { class: a.off ? 'muted' : '' }, a.label), h('div', { class: 'muted credit' }, offsetText(a))),
           canOff ? h('button', { class: 'btn small', onclick: function () {
             var on = !a.off;
             setTrainLocal(key, a.date, on ? { version: '不抵' } : null);
             enqueue('trainSet', { date: a.date, item: key, done: on, version: on ? '不抵' : '' });
           } }, a.off ? '恢復' : '不抵') : a.source === 'manual' ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除這筆「' + a.label + '」？')) removeManualTrain(a); } }, '刪除') : null);
       }),
-      h('div', { class: 'muted' }, '同一天同類型的手錶運動一起處理。'));
+      h('div', { class: 'muted' }, '有氧：跑步等不看心率；手錶走路要單次 20 分鐘以上、平均心率在 Zone 2（預設 113～132）才算，短的與太悠閒的走路不會列在這裡。同一天同類型的手錶運動一起處理。'));
   }
 
   // A manual entry can be taken back: its row goes, and a cardio entry gives its minutes back to the weekly run total.
@@ -2584,7 +2602,7 @@
     if (!PREFS.launch || !state.cfg || !state.data || document.getElementById('launch')) return;
     var start = state.data.settings && state.data.settings.trainStart;
     if (!start) return;
-    var items = trainingReminder(today(), start, trainRowsAll(), dget('workouts'));
+    var items = trainingReminder(today(), start, trainRowsAll(), dget('workouts'), zone2Band() || undefined);
     if (!items.length) return;
     var lines = items.map(function (it) { return h('div', { class: 'li' }, (it.icon || '•') + ' ' + it.title + (it.minutes ? '　' + it.minutes + ' 分' : '')); });
     var c = ctx(), early = c.tasks.filter(function (t) { return /晨間/.test(t.name || '') && isScheduled(t, today()); })[0];

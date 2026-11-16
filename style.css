@@ -253,3 +253,13 @@ td.auto { font-weight: 600; }
 .ef-fold > summary .ef-tag { margin-left: auto; }
 .ef-fold[open] > summary { margin-bottom: 6px; }
 .ef-same { display: block; font-size: .75rem; color: var(--d5); margin-top: 1px; }
+
+/* 日記習慣: one dot per day, same night / filled in later / missed */
+.dstrip { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+.dstrip i { width: 14px; height: 14px; border-radius: 4px; background: var(--track); }
+.dstrip i.same { background: var(--accent); }
+.dstrip i.late { background: transparent; border: 2px solid var(--accent); }
+.dstrip i.missed { background: var(--warn); }
+.dnudge { border-color: var(--warn); }
+.dcount { font-size: .875rem; margin-top: 6px; }
+.dcount.ok { color: var(--accent); }

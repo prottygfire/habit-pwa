@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-13 v24';
+  var VERSION = '2026-11-16 v25';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -51,6 +51,7 @@
 
   var qTab = new URLSearchParams(location.search).get('tab');
   if (TABS.indexOf(qTab) >= 0) state.tab = qTab;
+  var qDiary = new URLSearchParams(location.search).get('diary');   // from the Telegram nudge: open the diary form on that day
 
   function today() { return localDate(new Date()); }
 
@@ -621,6 +622,7 @@
       if (isCounterTask(t)) { state.modal = { type: 'counter', task: t, date: date }; renderModal(); }
       else if (hasOptions(t)) { state.modal = { type: 'options', task: t, date: date }; renderModal(); }
       else if (done) uncheckTask(t, date);
+      else if (ledgerKindOf(t) === 'diary') openLedger('diary', date);   // an entry of at least DIARY_MIN_CHARS characters is what ticks it
       else checkTask(t, date, '標準', '');
     };
     return h('div', { class: 'card item row ' + dimCls(t.dim) + (done ? ' done' : '') + (isBonus(t) ? ' bonus' : '') + (ex ? ' exempt' : '') + (rel && !done ? ' relieved' : '') },
@@ -701,6 +703,8 @@
       h('button', { class: 'btn small' + (onLeave ? ' primary' : ''), onclick: function () { toggleLeave(date, !onLeave); } }, onLeave ? '已請假（點一下取消）' : '這天請假（不影響連續天數）')
     ];
     if (isToday) {
+      var dn = diaryNudge(c.tasks, c.logs, date, c.idx, c.leave);
+      if (dn) nodes.splice(2, 0, diaryNudgeCard(dn, date));
       var pending = backfillPending(c.tasks, date, c.idx, c.leave);
       if (pending.length) {
         nodes.splice(2, 0, h('div', { class: 'card backfill' },
@@ -1411,28 +1415,94 @@
     return form;
   }
 
+  // ---- 日記習慣: stats, the "already missed" nudge, and the minimum length ----
+
+  function dayLabel(date) {
+    var n = daysBetween(date, today());
+    return n === 1 ? '昨天' : n === 2 ? '前天' : date.slice(5).replace('-', '/');
+  }
+
+  function diaryNudgeCard(n, date) {
+    var btns = n.dates.slice(0, 2).map(function (d) {
+      return h('button', { class: 'btn small primary', type: 'button', onclick: function () { openLedger('diary', d); } }, '補 ' + dayLabel(d));
+    });
+    btns.push(h('button', { class: 'btn small', type: 'button', onclick: function () { openLedger('diary', date); } }, '寫今天'));
+    return h('div', { class: 'card dnudge' },
+      h('div', null, diaryNudgeText(n, 'app')),
+      h('div', { class: 'row', style: 'margin-top:8px;flex-wrap:wrap' }, btns));
+  }
+
+  function diaryStatsCard() {
+    var c = ctx(), st = diaryStats(c.tasks, c.logs, today(), c.idx, c.leave, DIARY_WINDOW);
+    if (!st) return null;
+    var done = st.same + st.late, total = done + st.missed;
+    var card = h('div', { class: 'card' }, h('div', { class: 'name' }, '📝 日記習慣（近 ' + st.days.length + ' 天）'));
+    if (!total) { card.appendChild(h('div', { class: 'muted' }, '還沒有可統計的天數。')); return card; }
+    card.appendChild(h('div', { class: 'stat' },
+      h('span', null, '當晚寫 ', h('b', null, st.same)),
+      h('span', null, '隔天後補 ', h('b', null, st.late)),
+      h('span', null, '漏 ', h('b', null, st.missed))));
+    card.appendChild(h('div', { class: 'dstrip', role: 'img', 'aria-label': '每天日記狀態，左舊右新' }, st.days.map(function (d) {
+      var label = d.status === 'same' ? '當晚寫' : d.status === 'late' ? '隔 ' + d.lag + ' 天補' : d.status === 'missed' ? '漏' : '請假／免責';
+      return h('i', { class: d.status, title: d.date + ' ' + label });
+    })));
+    var bits = ['實心＝當晚寫、空心＝事後補、紅＝漏，左舊右新'];
+    if (st.avgLag !== null) bits.push('補寫平均晚 ' + st.avgLag + ' 天');
+    if (st.longestMissRun >= 2) bits.push('最長連漏 ' + st.longestMissRun + ' 天');
+    card.appendChild(h('div', { class: 'muted', style: 'margin-top:6px' }, bits.join('・')));
+    card.appendChild(h('div', { style: 'margin-top:6px' },
+      st.streak > 0 ? h('span', { class: 'chip on' }, '🔥 當晚連續 ' + st.streak + ' 天') : h('span', { class: 'chip' }, '當晚連續 0 天'),
+      st.missRun > 0 ? h('span', { class: 'chip', style: 'border-color:var(--warn);color:var(--warn)' }, '已連漏 ' + st.missRun + ' 天') : null));
+    var n = diaryNudge(c.tasks, c.logs, today(), c.idx, c.leave);
+    if (n) card.appendChild(h('div', { class: 'alert' }, diaryNudgeText(n, 'app')));
+    else if (st.missed && !st.missRun) card.appendChild(h('div', { class: 'muted', style: 'margin-top:6px' }, '目標順序：先讓「漏」歸零，再把「事後補」變成「當晚寫」。每次補寫只需要 ' + DIARY_MIN_CHARS + ' 個字。'));
+    return card;
+  }
+
   function diaryForm(L0, lg) {
-    var d = L0.draft;
+    var d = L0.draft, c = ctx(), task = diaryTaskOf(c.tasks);
     if (!lg.diary) return h('div', { class: 'card muted' }, '日記資料庫還沒設定：到 Apps Script 執行 setupLedger()。');
     var preview = L0.preview && L0.preview.date === L0.date ? h('div', { class: 'howto', style: 'white-space:pre-wrap' }, L0.preview.text || '（這天還沒有內容）') : null;
-    return h('form', { class: 'card', onsubmit: function (ev) {
+    var alreadyDone = task && isDone(task, L0.date, c.idx);
+    var counter = h('div', { class: 'dcount' });
+    var submit = h('button', { class: 'btn primary grow', type: 'submit', disabled: true }, '寫進日記');
+    function refreshCount() {
+      var n = diaryChars(d.diary), ok = n >= DIARY_MIN_CHARS;
+      counter.className = 'dcount' + (ok ? ' ok' : '');
+      counter.textContent = ok ? '✓ ' + n + ' 字，夠了' + (alreadyDone ? '（這天已打勾）' : '，寫進去就會打勾') : n + ' / ' + DIARY_MIN_CHARS + ' 字，再 ' + (DIARY_MIN_CHARS - n) + ' 字就算完成';
+      submit.disabled = L0.busy || !ok;
+      submit.textContent = L0.busy ? '寫入中…' : ok ? '寫進日記' : '再 ' + (DIARY_MIN_CHARS - n) + ' 字';
+    }
+    refreshCount();
+    var form = h('form', { class: 'card', onsubmit: function (ev) {
       ev.preventDefault();
-      if (!d.diary.trim()) { toast('請先寫點內容'); return; }
+      if (diaryChars(d.diary) < DIARY_MIN_CHARS) { toast('至少 ' + DIARY_MIN_CHARS + ' 個字才算寫日記'); return; }
       ledgerSend('diary', 'ledgerDiary', { date: L0.date, text: d.diary }, function (r) {
         d.diary = ''; L0.preview = null;
         tickByName(/日記/, L0.date, '');
-        toast('已接在 ' + r.cell + ' 後面');
+        toast('已接在 ' + r.cell + ' 後面，日記打勾了');
       });
     } },
-      h('label', { class: 'f', for: 'd-text' }, '今天發生了什麼？（會接在 Year at a Glance 當天格子後面）'),
-      h('textarea', { id: 'd-text', rows: '8', oninput: function (ev) { d.diary = ev.target.value; } }, d.diary),
+      h('label', { class: 'f', for: 'd-text' }, dayLabel(L0.date) + '發生了什麼？至少 ' + DIARY_MIN_CHARS + ' 個字（會接在 Year at a Glance 當天格子後面）'),
+      h('textarea', { id: 'd-text', rows: '8', oninput: function (ev) { d.diary = ev.target.value; refreshCount(); } }, d.diary),
+      counter,
       preview,
       h('div', { class: 'row', style: 'margin-top:12px' },
-        h('button', { class: 'btn primary grow', type: 'submit', disabled: L0.busy }, L0.busy ? '寫入中…' : '寫進日記'),
+        submit,
         h('button', { class: 'btn', type: 'button', onclick: function () {
           api('ledgerDiaryRead', { date: L0.date }).then(function (res) { L0.preview = { date: L0.date, text: res.result.text }; render(); })
             .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
         } }, '看當天已寫的')));
+    var nodes = [];
+    var sc = diaryStatsCard();
+    if (sc) nodes.push(sc);
+    nodes.push(form);
+    if (task && !alreadyDone) {
+      nodes.push(h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'btn small', type: 'button', onclick: function () {
+        if (window.confirm(dayLabel(L0.date) + '的日記已經寫在別的地方（例如直接在 Year at a Glance）？這樣只會打勾，不會檢查字數。')) { checkTask(task, L0.date, '標準', ''); toast('已打勾'); render(); }
+      } }, '已在別處寫好，直接打勾')));
+    }
+    return h('div', null, nodes);
   }
 
   function ledgerDayList(L0, lg) {
@@ -2424,6 +2494,7 @@
     setTimeout(closeLaunch, 2500);
   }
 
+  if (/^\d{4}-\d{2}-\d{2}$/.test(qDiary || '') && qDiary <= today()) { var Ld = ledgerState(); Ld.pane = 'diary'; Ld.date = qDiary; state.tab = 'ledger'; if (state.cfg) loadLedger(); }
   render();
   showLaunchReminder();
   if (location.hash === '#accum') setTimeout(function () { var el = document.getElementById('accum'); if (el) el.scrollIntoView(); }, 300);

@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, history.js and effort.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js and effort.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -1787,6 +1787,105 @@ function dietReview(tasks, logs, month, today) {
     if (worst) out.advice.push('⚠️ ' + worst.it.emoji + worst.it.name + '的天數比例比上月多了 ' + pct0_(worst.diff) + ' 個百分點，是本月最該先處理的一項。');
   }
   return out;
+}
+
+// 日記習慣: how many days the 寫日記 task was missed or only filled in late, a minimum length for an entry, and the "you already
+// missed a day" nudge used by both the app and the Telegram reminders. Pure helpers; concatenated after diet.js by build.py.
+
+var DIARY_MIN_CHARS = 10;       // an entry counts once it has this many characters (spaces and line breaks do not count)
+var DIARY_NIGHT_END = '04:00';  // an entry written before 04:00 the next morning still counts as written "that night"
+var DIARY_WINDOW = 28;
+
+function diaryTaskOf(tasks) {
+  for (var i = 0; i < tasks.length; i++) if (tasks[i].active && /日記/.test(tasks[i].name) && !isAccumFreq(tasks[i].freq)) return tasks[i];
+  return null;
+}
+
+function diaryChars(text) { return Array.from(String(text || '').replace(/\s+/g, '')).length; }
+
+// date -> timestamp of the (first) check-in of the diary task.
+function diaryLogMap_(task, logs) {
+  var map = {};
+  for (var i = 0; i < logs.length; i++) {
+    var l = logs[i];
+    if (l.taskId === task.id && map[l.date] === undefined) map[l.date] = String(l.ts || '');
+  }
+  return map;
+}
+
+// One past day -> {date, status: 'same' | 'late' | 'missed' | 'leave' | 'waived', lag}, or null when the task was not scheduled.
+// same = written that day (or that night before 04:00); late = filled in afterwards, lag = days later.
+function diaryDay(task, date, map, idx, leave) {
+  if (leave[date]) return { date: date, status: 'leave', lag: null };
+  if (isWaived(task, date, idx)) return { date: date, status: 'waived', lag: null };
+  if (!isScheduled(task, date)) return null;
+  if (!isDone(task, date, idx)) return { date: date, status: 'missed', lag: null };
+  var ts = map[date] || '', tsDate = ts.slice(0, 10), tsTime = ts.slice(11, 16);
+  if (!tsDate || tsDate <= date) return { date: date, status: 'same', lag: 0 };
+  if (tsDate === addDays(date, 1) && tsTime < DIARY_NIGHT_END) return { date: date, status: 'same', lag: 0 };
+  return { date: date, status: 'late', lag: daysBetween(date, tsDate) };
+}
+
+// Stats over the last `windowDays` days before today (today is still open, so it only feeds the streak).
+function diaryStats(tasks, logs, today, idx, leave, windowDays) {
+  var task = diaryTaskOf(tasks);
+  if (!task) return null;
+  var map = diaryLogMap_(task, logs), n = windowDays || DIARY_WINDOW;
+  var start = addDays(today, -n);
+  if (task.since && task.since > start) start = task.since;
+  var days = [], d;
+  for (d = start; d < today; d = addDays(d, 1)) {
+    var r = diaryDay(task, d, map, idx, leave);
+    if (r) days.push(r);
+  }
+  var out = { taskId: task.id, from: start, days: days, same: 0, late: 0, missed: 0, avgLag: null, longestMissRun: 0, missRun: 0, streak: 0, missedDates: [], doneToday: isDone(task, today, idx) };
+  var lagSum = 0, run = 0, i;
+  for (i = 0; i < days.length; i++) {
+    var s = days[i].status;
+    if (s === 'same') { out.same++; run = 0; }
+    else if (s === 'late') { out.late++; lagSum += days[i].lag; run = 0; }
+    else if (s === 'missed') { out.missed++; run++; if (run > out.longestMissRun) out.longestMissRun = run; out.missedDates.push(days[i].date); }
+  }
+  out.missedDates.reverse();
+  if (out.late) out.avgLag = Math.round(lagSum / out.late * 10) / 10;
+  // trailing runs, newest day first (leave / waived days neither break nor extend a run)
+  var missOpen = true, sameOpen = true;
+  if (out.doneToday) { var tr = diaryDay(task, today, map, idx, leave); if (tr && tr.status === 'same') out.streak++; else sameOpen = false; }
+  for (i = days.length - 1; i >= 0; i--) {
+    var st = days[i].status;
+    if (st === 'leave' || st === 'waived') continue;
+    if (missOpen && st === 'missed') out.missRun++; else missOpen = false;
+    if (sameOpen && st === 'same') out.streak++; else sameOpen = false;
+    if (!missOpen && !sameOpen) break;
+  }
+  return out;
+}
+
+// The "you already missed a day" nudge. null when yesterday (and earlier) is fine or the day is on leave.
+// level 1 = one day missing, 2 = two or more in a row (the point where "skipping" starts to feel normal), 3 = 4+ in a row.
+function diaryNudge(tasks, logs, date, idx, leave) {
+  if (leave[date]) return null;
+  var st = diaryStats(tasks, logs, date, idx, leave, 14);
+  if (!st || st.missRun < 1) return null;
+  var level = st.missRun >= 4 ? 3 : st.missRun >= 2 ? 2 : 1;
+  var dates = [], d = date, guard = 0;
+  while (dates.length < Math.min(st.missRun, 3) && guard++ < 20) {
+    d = addDays(d, -1);
+    if (!leave[d] && !isWaived({ id: st.taskId }, d, idx)) dates.push(d);   // newest first
+  }
+  return { level: level, run: st.missRun, dates: dates, yesterday: addDays(date, -1) };
+}
+
+// App banner / Telegram text. slot: 'app' | 'morning' | 'noon' | 'evening' | 'followup'.
+function diaryNudgeText(n, slot) {
+  if (!n) return '';
+  var m = DIARY_MIN_CHARS, who = n.run >= 2 ? '已經連續 ' + n.run + ' 天沒寫日記' : '昨天沒寫日記';
+  if (n.level === 1) {
+    if (slot === 'evening' || slot === 'followup') return '📝 ' + who + '。今晚一起補上，昨天和今天各 ' + m + ' 個字就夠，兩分鐘。';
+    return '📝 ' + who + '。只要一次就接回來：補昨天 ' + m + ' 個字，今天再寫 ' + m + ' 個字。';
+  }
+  if (slot === 'evening' || slot === 'followup') return '🚨 ' + who + '。現在不寫，「不寫也沒關係」會開始變成預設。' + m + ' 個字就好，先寫最近的一天。';
+  return '🚨 ' + who + '。第二次中斷是最容易放掉的關口，今天一定接上：先用 ' + m + ' 個字補最近的一天，今晚再補今天。';
 }
 
 // 歷史對照: months before HISTORY_FROM are the hand-written numbers of the 「歷史月統計」 tab; from HISTORY_FROM on, the same kind of

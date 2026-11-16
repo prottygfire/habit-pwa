@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-16 v27';
+  var VERSION = '2026-11-16 v28';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -407,7 +407,10 @@
     var m = /^\s*(\d+)\s*,\s*(\d+)\s*$/.exec((state.data.settings && state.data.settings.zone2Hr) || '');
     return m && Number(m[1]) < Number(m[2]) ? [Number(m[1]), Number(m[2])] : null;
   }
-  function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today(), zone2Band() || undefined); }
+  // No workout row carries a heart rate (the backend Store.gs is not updated yet): count the walks by minutes instead of dropping them all, and say so.
+  function hrKnown() { return dget('workouts').some(function (w) { return Number(w.hr) > 0; }); }
+  function zoneForPlan() { return zone2Band() || (hrKnown() ? undefined : [0, 999]); }
+  function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today(), zoneForPlan()); }
   function trainOn(id, date) { return trainRows().filter(function (r) { return r.item === id && r.date === date; })[0]; }
   function trainStateOn(date) { var r = trainOn('_state', date); return r ? r.version : ''; }
   function runTask() {
@@ -929,7 +932,8 @@
             enqueue('trainSet', { date: a.date, item: key, done: on, version: on ? '不抵' : '' });
           } }, a.off ? '恢復' : '不抵') : a.source === 'manual' ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除這筆「' + a.label + '」？')) removeManualTrain(a); } }, '刪除') : null);
       }),
-      h('div', { class: 'muted' }, '有氧：跑步等不看心率；手錶走路要單次 20 分鐘以上、平均心率在 Zone 2（預設 113～132）才算，短的與太悠閒的走路不會列在這裡。同一天同類型的手錶運動一起處理。'));
+      !hrKnown() && dget('workouts').length ? h('div', { class: 'variant' }, '目前取不到手錶的平均心率（後端 Store.gs 還沒更新），所以走路先全部照分鐘算；更新後只算心率在 Zone 2 區間的走路。') : null,
+      h('div', { class: 'muted' }, '有氧：跑步等不看心率；手錶走路要單次 10 分鐘以上、平均心率在 Zone 2（預設 113～132）才算，更短或太悠閒的走路不會列在這裡。同一天同類型的手錶運動一起處理。'));
   }
 
   // A manual entry can be taken back: its row goes, and a cardio entry gives its minutes back to the weekly run total.
@@ -2602,7 +2606,7 @@
     if (!PREFS.launch || !state.cfg || !state.data || document.getElementById('launch')) return;
     var start = state.data.settings && state.data.settings.trainStart;
     if (!start) return;
-    var items = trainingReminder(today(), start, trainRowsAll(), dget('workouts'), zone2Band() || undefined);
+    var items = trainingReminder(today(), start, trainRowsAll(), dget('workouts'), zoneForPlan());
     if (!items.length) return;
     var lines = items.map(function (it) { return h('div', { class: 'li' }, (it.icon || '•') + ' ' + it.title + (it.minutes ? '　' + it.minutes + ' 分' : '')); });
     var c = ctx(), early = c.tasks.filter(function (t) { return /晨間/.test(t.name || '') && isScheduled(t, today()); })[0];

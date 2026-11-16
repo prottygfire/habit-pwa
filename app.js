@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-16 v25';
+  var VERSION = '2026-11-16 v26';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -399,6 +399,10 @@
 
   function trainStart() { return (state.data.settings && state.data.settings.trainStart) || '2026-10-19'; }
   function trainRows() { return state.data.train || []; }
+  // The rolling week plan for the week of `date` (what was done is credited, the rest is re-planned from today on).
+  // The strength table (逐動作記錄) has no tick of its own, so those days are added as home-a / home-b ticks for the plan.
+  function trainRowsAll() { return trainRows().concat(homeStrengthTrainRows(trainRows(), dget('strength'), dget('strengthMoves'))); }
+  function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today()); }
   function trainOn(id, date) { return trainRows().filter(function (r) { return r.item === id && r.date === date; })[0]; }
   function trainStateOn(date) { var r = trainOn('_state', date); return r ? r.version : ''; }
   function runTask() {
@@ -417,7 +421,7 @@
     var rt = runTask();
     if (item.isRun && rt && minutes > 0) saveMinutes(rt, date, minutes);
     if (item.kind === 'strength') tickByName(/重量訓練/, date, '健身房');
-    if (item.kind === 'interval') tickByName(/壺鈴間歇/, date, '');
+    if (item.kind === 'interval') tickByName(/間歇/, date, '');
   }
 
   function trainUndo(item, date) {
@@ -596,7 +600,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
+    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -846,9 +850,14 @@
 
   // ---- 訓練 tab ----
 
+  function movedNote(item) {
+    return item.movedFrom ? h('div', { class: 'muted moved' }, '從週' + WEEKDAY_NAMES[weekdayOf(item.movedFrom) - 1] + ' 挪來') : null;
+  }
+
   function trainCard(item, date, st) {
     var cur = trainOn(item.id, date), variant = trainVariant(item, st), future = date > today();
-    return h('div', { class: 'card item train' + (cur ? ' done' : '') },
+    var byCredit = !cur && item.status === 'done';
+    return h('div', { class: 'card item train' + (cur || byCredit ? ' done' : '') },
       h('div', { class: 'row' },
         h('div', { class: 'grow' },
           h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, item.icon), item.title),
@@ -856,15 +865,105 @@
             h('span', { class: 'chip' + (item.fixed ? ' on' : '') }, item.fixed ? '已排定' : '可以做'),
             h('span', { class: 'chip' }, item.time),
             item.minutes ? h('span', { class: 'muted' }, '約 ' + item.minutes + ' 分') : null,
-            cur ? h('span', { class: 'chip on' }, '✓ 做了' + (cur.minutes ? ' ' + cur.minutes + ' 分' : '') + (cur.version && cur.version !== '標準' ? '（' + cur.version + '）' : '')) : null)),
+            cur ? h('span', { class: 'chip on' }, '✓ 做了' + (cur.minutes ? ' ' + cur.minutes + ' 分' : '') + (cur.version && cur.version !== '標準' ? '（' + cur.version + '）' : '')) : null,
+            byCredit ? h('span', { class: 'chip on' }, '✓ 已抵') : null,
+            !cur && !byCredit && item.remainingMin > 0 && item.remainingMin < item.minutes ? h('span', { class: 'chip' }, '還差 ' + item.remainingMin + ' 分') : null)),
         future ? null : h('button', { class: 'btn small' + (cur ? '' : ' primary'), onclick: function () { state.modal = { type: 'train', task: item, date: date }; renderModal(); } }, cur ? '編輯' : '做了')),
+      byCredit && item.credit ? h('div', { class: 'muted credit' }, item.credit) : null,
+      movedNote(item),
       variant ? h('div', { class: 'variant' }, h('b', null, variant.label + '：'), variant.text) : null,
       item.detail && item.detail.length ? h('details', null, h('summary', null, '內容'), h('ul', null, item.detail.map(function (d) { return h('li', null, d); }))) : null);
   }
 
+  // 本週一覽: every day of the week with a checkbox per item. Ticking = "I did it that day"; days after today can't be ticked.
+  function checkRow(item, date) {
+    var own = trainOn(item.id, date), box = h('input', { type: 'checkbox', checked: !!own, disabled: date > today(), 'aria-label': item.title,
+      onchange: function () { if (box.checked) trainDone(item, date, item.planned || item.minutes || 0, 0, '', '標準'); else trainUndo(item, date); } });
+    var tail = own ? '' : item.status === 'done' ? '　✓ 已抵' : item.status === 'missed' ? '　這週算了' : '';
+    return h('label', { class: 'chk' + (item.status === 'missed' && !own ? ' missed' : '') }, box, ' ' + item.title + tail,
+      item.movedFrom ? h('span', { class: 'muted' }, '（從週' + WEEKDAY_NAMES[weekdayOf(item.movedFrom) - 1] + ' 挪來）') : null);
+  }
+
+  function weekChecklistCard(plan) {
+    var t0 = today();
+    var rows = plan.days.map(function (d, k) {
+      var head = h('b', null, '週' + WEEKDAY_NAMES[k] + ' ' + md(d.date) + (d.date === t0 ? '（今天）' : '') + ' ');
+      if (d.rest) return h('li', null, head, h('span', { class: 'muted' }, '休假'));
+      var items = d.items.filter(function (i) { return i.id !== 'pelvic'; });
+      return h('li', null, head, items.length ? items.map(function (i) { return checkRow(i, d.date); }) : h('span', { class: 'muted' }, '休息'));
+    });
+    return h('details', { class: 'card', open: !!state.weekListOpen, ontoggle: function (ev) { state.weekListOpen = ev.target.open; } },
+      h('summary', null, '本週一覽（可勾選補登）'), h('ul', { class: 'weeklist' }, rows),
+      h('div', { class: 'muted' }, '勾選是記「這天做了」。挪來的項目如果其實做在別天，用「我做了別的」選日期補登。'));
+  }
+
+  // 這週算進來的活動: where each credit came from; a watch session can be turned off ("不抵") when it should not count.
+  function activitiesCard(plan) {
+    var list = plan.activities;
+    if (!list.length) return h('div', { class: 'card muted' }, '這週還沒有算進來的運動。手錶的運動與你勾的訓練會自動抵掉對應的項目。');
+    return h('div', { class: 'card' }, h('div', { class: 'name' }, '這週算進來的運動'),
+      list.map(function (a) {
+        var key = '_no-' + a.kind, canOff = a.source === 'watch' && NO_CREDIT_KINDS_.indexOf(a.kind) >= 0;
+        return h('div', { class: 'row', style: 'margin:6px 0' }, h('div', { class: 'grow' + (a.off ? ' muted' : '') }, a.label + (a.off ? '（不抵）' : '')),
+          canOff ? h('button', { class: 'btn small', onclick: function () {
+            var on = !a.off;
+            setTrainLocal(key, a.date, on ? { version: '不抵' } : null);
+            enqueue('trainSet', { date: a.date, item: key, done: on, version: on ? '不抵' : '' });
+          } }, a.off ? '恢復' : '不抵') : a.source === 'manual' ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除這筆「' + a.label + '」？')) removeManualTrain(a); } }, '刪除') : null);
+      }),
+      h('div', { class: 'muted' }, '同一天同類型的手錶運動一起處理。'));
+  }
+
+  // A manual entry can be taken back: its row goes, and a cardio entry gives its minutes back to the weekly run total.
+  function removeManualTrain(a) {
+    var prev = trainOn(a.item, a.date), rt = runTask();
+    setTrainLocal(a.item, a.date, null);
+    enqueue('trainSet', { date: a.date, item: a.item, done: false });
+    if (a.item === 'x-cardio' && rt) {
+      var l = dget('logs').filter(function (x) { return x.date === a.date && x.taskId === rt.id; })[0];
+      saveMinutes(rt, a.date, Math.max(0, (l ? l.minutes || 0 : 0) - (prev ? prev.minutes || 0 : 0)));
+    }
+  }
+
+  function manualTrainModal(m) {
+    var kinds = [['x-cardio', '有氧（跑步、快走、騎車、游泳…）'], ['x-strength', '力量'], ['x-yoga', '瑜珈'], ['x-interval', '間歇'], ['x-other', '只記錄（不抵任何項目）']];
+    var form = h('form', { onsubmit: function (ev) {
+      ev.preventDefault();
+      var item = form.elements.kind.value, date = form.elements.date.value, mins = parseInt(form.elements.mins.value, 10) || 0;
+      if (mins < 0 || mins > 600) { toast('分鐘數要在 0 到 600 之間'); return; }
+      if (item !== 'x-other' && mins < 1) { toast('請填做了幾分鐘'); return; }
+      var prev = trainOn(item, date), rt = runTask();
+      closeModal();
+      setTrainLocal(item, date, { minutes: mins, version: '手動' });
+      enqueue('trainSet', { date: date, item: item, done: true, minutes: mins, rpe: 0, version: '手動', note: '' });
+      if (item === 'x-cardio' && rt) {
+        var l = dget('logs').filter(function (x) { return x.date === date && x.taskId === rt.id; })[0];
+        saveMinutes(rt, date, Math.max(0, (l ? l.minutes || 0 : 0) - (prev ? prev.minutes || 0 : 0) + mins));
+      }
+      if (item === 'x-strength') tickByName(/重量訓練/, date, '手動');
+      if (item === 'x-interval') tickByName(/間歇/, date, '手動');
+    } },
+      h('p', { class: 'muted' }, '做了計畫以外的、或換天做的，在這裡補記，會自動抵掉這週對應的項目。同一天同類型只留一筆，要加總請填合計分鐘。'),
+      h('label', { class: 'f', for: 'mt-date' }, '哪一天'),
+      h('select', { id: 'mt-date', name: 'date' }, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(function (n) {
+        var d = addDays(today(), -n);
+        return h('option', { value: d, selected: d === m.date }, (n === 0 ? '今天 ' : n === 1 ? '昨天 ' : '') + dateTitle(d));
+      })),
+      h('label', { class: 'f', for: 'mt-kind' }, '做了什麼'),
+      h('select', { id: 'mt-kind', name: 'kind' }, kinds.map(function (k) { return h('option', { value: k[0] }, k[1]); })),
+      h('label', { class: 'f', for: 'mt-mins' }, '分鐘'),
+      h('input', { type: 'number', id: 'mt-mins', name: 'mins', min: '0', max: '600', inputmode: 'numeric', value: '' }),
+      h('div', { class: 'row', style: 'margin-top:14px' },
+        h('button', { class: 'btn primary grow', type: 'submit' }, '記下來'),
+        h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+    return modalShell('我做了別的', form);
+  }
+
   function renderTrain() {
     var date = state.trainDate, isToday = date === today(), future = date > today(), start = trainStart();
-    var menu = trainingMenu(date, start), st = trainStateOn(date);
+    var plan = trainPlan(date), dayPlan = plan.days.filter(function (d) { return d.date === date; })[0], st = trainStateOn(date);
+    // days before today keep their unfinished items so they can still be ticked afterwards; today and later only show what is suggested
+    var menu = { started: plan.started, finished: plan.finished, week: plan.week, items: dayPlan ? dayPlan.items.filter(function (i) { return i.status !== 'missed' || date < today(); }) : [] };
     var sum = trainingSummary(date, trainRows());
     var nodes = [
       h('div', { class: 'sticky' },
@@ -879,7 +978,8 @@
     } else {
       nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・' + (future ? '這天' : '今天') + '有哪些可以做，做了就記，沒做也沒關係。'));
       if (menu.finished) nodes.push(h('p', { class: 'muted' }, '12 週計畫已走完，先沿用第 12 週的內容；想換新計畫再告訴我。'));
-      nodes.push(weekLoadCard(date, start));
+      if (dayPlan && dayPlan.rest) nodes.push(h('p', { class: 'muted' }, '這天是休假日，不排訓練；原本要做的會挪到之後。'));
+      nodes.push(weekLoadCard(plan));
       nodes.push(h('div', { class: 'seg' }, TRAIN_STATES.map(function (s) {
         return h('button', { class: 'btn' + (st === s ? ' on' : ''), 'aria-pressed': String(st === s), disabled: future, onclick: function () { setTrainState(date, s); } }, s);
       })));
@@ -893,12 +993,9 @@
       if (fixed.length) { nodes.push(h('h2', null, '固定的課')); addAll(fixed); }
       if (free.length) { nodes.push(h('h2', null, '可以做')); addAll(free); }
       if (!future && !core.some(function (i) { return i.kind === 'strength-home'; })) { var extra = extraStrengthCard(date); if (extra) nodes.push(extra); }
-      var wkStart = addDays(date, -(weekdayOf(date) - 1)), rows = [];
-      for (var k = 0; k < 7; k++) {
-        var d = addDays(wkStart, k), m = trainingMenu(d, start);
-        rows.push(h('li', null, h('b', null, '週' + WEEKDAY_NAMES[k] + ' '), m.items.filter(function (i) { return i.kind !== 'pelvic'; }).map(function (i) { return i.title; }).join('、') || '休息'));
-      }
-      nodes.push(h('details', { class: 'card' }, h('summary', null, '本週一覽'), h('ul', null, rows)));
+      nodes.push(h('button', { class: 'btn', style: 'margin:8px 0', onclick: function () { state.modal = { type: 'manualTrain', task: { id: 'manual' }, date: date > today() ? today() : date }; renderModal(); } }, '＋ 我做了別的'));
+      nodes.push(weekChecklistCard(plan));
+      nodes.push(activitiesCard(plan));
     }
     var picker = h('input', { type: 'date', id: 'ts-start', value: start });
     nodes.push(h('details', { class: 'card' }, h('summary', null, '計畫設定'),
@@ -1723,13 +1820,17 @@
 
   // ---- 訓練頁: the merged plan ----
 
-  function weekLoadCard(date, start) {
-    var w = trainingWeekLoad(date, start);
+  function weekLoadCard(plan) {
+    var l = plan.load;
     function hm(min) { return min >= 60 ? Math.floor(min / 60) + ' 小時' + (min % 60 ? ' ' + (min % 60) + ' 分' : '') : min + ' 分'; }
+    function part(done, min, std, all, unit) {
+      return Math.round(done * 10) / 10 + unit + '／最低 ' + min + unit + '・標準 ' + std + unit + (all > std ? '・全做 ' + all + unit : '');
+    }
     return h('div', { class: 'card' },
-      h('div', { class: 'name' }, '這週的負擔'),
-      h('div', { class: 'muted' }, '最低版 ' + hm(w.min) + '（週一、週五的力量，加週日長 Zone 2）・標準版 ' + hm(w.std) + '・全做 ' + hm(w.std + w.opt) + (w.fixed ? '，另外固定的課和健身房 ' + hm(w.fixed) : '')),
-      h('div', { class: 'muted' }, '忙的週只做最低版就夠。選「疲勞」，卡片會給輕鬆版。'));
+      h('div', { class: 'name' }, '這週做到哪'),
+      h('div', null, '有氧 ', part(l.cardio.done, l.cardio.min, l.cardio.std, l.cardio.all, ' 分')),
+      h('div', null, '力量 ', part(l.strength.done, l.strength.min, l.strength.std, l.strength.all, ' 次')),
+      h('div', { class: 'muted' }, '只是讓你知道這週還差多少，忙的週做到最低就夠。選「疲勞」，卡片會給輕鬆版。'));
   }
 
   function homeStrengthNodes(item, date, st) {
@@ -1740,7 +1841,9 @@
     var nodes = [h('div', { class: 'card item train' + (done ? ' done' : '') },
       h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, item.icon), item.title),
       h('div', null, h('span', { class: 'chip on' }, '本週重點'), h('span', { class: 'chip' }, item.time), h('span', { class: 'muted' }, '約 ' + item.minutes + ' 分'),
-        done ? h('span', { class: 'chip on' }, '✓ 已記錄') : null),
+        done ? h('span', { class: 'chip on' }, '✓ 已記錄') : item.status === 'done' ? h('span', { class: 'chip on' }, '✓ 已抵') : null),
+      item.status === 'done' && item.credit ? h('div', { class: 'muted credit' }, item.credit) : null,
+      movedNote(item),
       variant ? h('div', { class: 'variant' }, h('b', null, variant.label + '：'), variant.text) : null,
       h('ul', null, item.detail.map(function (x) { return h('li', null, x); })))];
     if (!moves.length) {
@@ -2481,7 +2584,7 @@
     if (!PREFS.launch || !state.cfg || !state.data || document.getElementById('launch')) return;
     var start = state.data.settings && state.data.settings.trainStart;
     if (!start) return;
-    var items = trainingReminder(today(), start, dget('train'));
+    var items = trainingReminder(today(), start, trainRowsAll(), dget('workouts'));
     if (!items.length) return;
     var lines = items.map(function (it) { return h('div', { class: 'li' }, (it.icon || '•') + ' ' + it.title + (it.minutes ? '　' + it.minutes + ' 分' : '')); });
     var c = ctx(), early = c.tasks.filter(function (t) { return /晨間/.test(t.name || '') && isScheduled(t, today()); })[0];

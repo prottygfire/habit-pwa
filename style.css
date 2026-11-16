@@ -263,3 +263,11 @@ td.auto { font-weight: 600; }
 .dnudge { border-color: var(--warn); }
 .dcount { font-size: .875rem; margin-top: 6px; }
 .dcount.ok { color: var(--accent); }
+
+/* 訓練頁：滾動週計畫 */
+.weeklist { list-style: none; padding: 0; margin: 8px 0; }
+.weeklist li { margin: 8px 0; }
+.chk { display: block; padding: 4px 0 4px 8px; font-size: .9375rem; }
+.chk input { width: 18px; height: 18px; vertical-align: -3px; margin-right: 6px; }
+.chk.missed { color: var(--muted); }
+.credit, .moved { font-size: .8125rem; margin-top: 4px; }

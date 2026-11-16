@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js and effort.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js and trainplan.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -432,7 +432,7 @@ function buildPlanText(kind, date, goals) {
 }
 
 // ---- Training menu (the 「訓練」 tab): what you CAN do today. Never a to-do: nothing here affects 必做 rates or streaks. ----
-// One merged plan (10/26): home strength A/B (kettlebell + band), Zone 2, one kettlebell interval, your fixed yoga classes
+// One merged plan (10/26): home strength A/B (kettlebell + band), Zone 2, one bodyweight home interval, your fixed yoga classes
 // and the Saturday gym session, plus at most one 5-minute mobility / pelvic-floor item a day. The old Samsung run plan is retired.
 // Week 1 starts on `start` (a Monday). Weekday numbers: 1 = Monday ... 7 = Sunday.
 //
@@ -453,7 +453,6 @@ var STRENGTH_UPPER = ['臥推或伏地挺身　3 × 8–12', '坐姿划船　3 �
 var PELVIC_MOVES = ['慢收縮：輕到中等力收縮 5 秒、完全放鬆 5 秒，共 8 次（正常呼吸，不憋氣）', '快速收縮：收 1 秒、放 1 秒，共 10 次', '腹式呼吸與放鬆 1–2 分鐘', '若有疼痛、排尿不適或會陰緊繃，先不要加量，請專業人員評估'];
 var HIP_MOVES = ['髖屈肌伸展（弓箭步）　每側 30–45 秒', '4 字（鴿式）伸展　每側 30–45 秒', '90/90 髖轉換　8 次', '全程不痛、不彈震，呼吸放鬆'];
 
-function intervalSets_(week) { return week <= 4 ? 6 : week <= 8 ? 7 : 8; }
 
 function trainItem_(id, kind, title, icon, minutes, detail, easy, up, extra) {
   var o = { id: id, kind: kind, title: title, icon: icon, minutes: minutes, detail: detail, easy: easy, up: up || '', fixed: false, tier: 'opt', time: '白天' };
@@ -472,11 +471,21 @@ function zone2Item_(id, title, minutes, tier) {
     '縮短到 25–30 分，或改快走', '', { planned: minutes, isRun: true, tier: tier });
 }
 
+// 居家徒手間歇 (replaces the kettlebell interval, 11/16): 4 moves per round, 40 s work / 20 s rest. Odd weeks circuit A, even weeks circuit B.
+var INTERVAL_A = ['高抬腿', '深蹲（快速）', '登山者', '開合跳'];
+var INTERVAL_B = ['弓箭步（交替）', '伏地挺身（可跪姿）', '快速臀橋', '登山者'];
+
+// Old rows used 'kb-interval'; they count as the new item everywhere.
+function trainCanonItem_(id) { return id === 'kb-interval' ? 'home-interval' : id; }
+
+function intervalRounds_(week) { return week <= 4 ? 3 : week <= 8 ? 4 : 5; }
+
 function intervalItem_(week) {
-  var n = intervalSets_(week);
-  return trainItem_('kb-interval', 'interval', '壺鈴間歇 ' + n + ' 組', '⚡', 20,
-    ['熱身 5 分鐘（開合跳、髖部活動）', '壺鈴擺盪 30 秒全力、休息 90 秒，共 ' + n + ' 組', '收操 3–5 分鐘', '胸悶、頭暈或胸痛就立刻停下'],
-    '改成 20 分鐘輕鬆有氧，或休息（前晚沒睡好、腿很痠時）', '', { tier: 'opt', time: '白天' });
+  var n = intervalRounds_(week), moves = week % 2 === 1 ? INTERVAL_A : INTERVAL_B;
+  return trainItem_('home-interval', 'interval', '居家徒手間歇 ' + n + ' 輪', '⚡', 5 + n * 4 + (n - 1) + 3,
+    ['熱身 5 分鐘 → 每個動作 40 秒做、20 秒休，一輪 4 個動作，輪間多休 1 分鐘，共 ' + n + ' 輪 → 收操 3 分鐘',
+      (week % 2 === 1 ? '循環 A：' : '循環 B：') + moves.join('、'), '胸悶、頭暈或任何不適就立刻停下'],
+    '全部改低衝擊（高抬腿改原地快步抬膝，開合跳改側步點地，登山者放慢），輪數減 1', '最後一輪每個動作做 45 秒', { tier: 'opt', time: '白天' });
 }
 
 function gymItem_(week) {
@@ -525,13 +534,14 @@ function trainingWeekLoad(date, start) {
   return out;
 }
 
-// 開機提醒: the training items of `date` that are not logged yet, without the pelvic-floor one ([] before the plan starts, after it ends, or once everything is done).
-function trainingReminder(date, start, trainLogs) {
-  var menu = trainingMenu(date, start);
-  if (!menu.started || menu.finished) return [];
-  var done = {};
-  (trainLogs || []).forEach(function (r) { if (r.date === date) done[r.item] = true; });
-  return menu.items.filter(function (it) { return !done[it.id] && it.id !== 'pelvic'; });   // the pelvic-floor item stays off a screen others may see (same rule as Telegram)
+// 開機提醒: today's suggested training items that are still open, from the rolling week plan (see trainplan.js), without the pelvic-floor one
+// ([] before the plan starts, after it ends, or once everything is done). workouts: the watch rows (optional).
+function trainingReminder(date, start, trainLogs, workouts) {
+  var plan = trainingWeekPlan(date, start, trainLogs || [], workouts || [], date);
+  if (!plan.started || plan.finished) return [];
+  var day = plan.days.filter(function (d) { return d.date === date; })[0];
+  // the pelvic-floor item stays off a screen others may see (same rule as Telegram)
+  return day ? day.items.filter(function (it) { return it.status === 'planned' && it.id !== 'pelvic'; }) : [];
 }
 
 // What to show for an item given today's state (精神好 / 普通 / 疲勞).
@@ -546,7 +556,7 @@ function trainingSummary(date, trainLogs) {
   var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), sessions = 0, minutes = 0;
   for (var i = 0; i < trainLogs.length; i++) {
     var l = trainLogs[i];
-    if (l.item === '_state' || l.date < start || l.date > end) continue;
+    if (String(l.item).charAt(0) === '_' || l.date < start || l.date > end) continue;
     sessions++;
     minutes += Number(l.minutes) || 0;
   }
@@ -554,15 +564,23 @@ function trainingSummary(date, trainLogs) {
 }
 
 // One line for the morning Telegram message. Pelvic-floor items never go to Telegram.
-function buildTrainingLine(date, start) {
-  var m = trainingMenu(date, start);
-  var titles = m.items.filter(function (t) { return t.kind !== 'pelvic'; }).map(function (t) { return t.title; });
+// With `train` / `workouts` (this week's rows) the line follows the rolling week plan and lists only what is still suggested today;
+// without them it is the plain menu of the day, as before.
+function buildTrainingLine(date, start, train, workouts) {
+  var items;
+  if (train === undefined && workouts === undefined) items = trainingMenu(date, start).items;
+  else {
+    var plan = trainingWeekPlan(date, start, train || [], workouts || [], date);
+    var day = plan.started ? plan.days.filter(function (d) { return d.date === date; })[0] : null;
+    items = day ? day.items.filter(function (it) { return it.status === 'planned'; }) : [];
+  }
+  var titles = items.filter(function (t) { return t.kind !== 'pelvic'; }).map(function (t) { return t.title; });
   return titles.length ? '🏃 今天可以練（不強制）：' + titles.join('、') : '';
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    addDays: addDays, weekdayOf: weekdayOf, daysBetween: daysBetween, monthKey: monthKey, quarterKey: quarterKey,
+    trainCanonItem_: trainCanonItem_, addDays: addDays, weekdayOf: weekdayOf, daysBetween: daysBetween, monthKey: monthKey, quarterKey: quarterKey,
     isLastDayOfMonth: isLastDayOfMonth, isQuarterStart: isQuarterStart, periodRange: periodRange, indexLogs: indexLogs,
     indexLeave: indexLeave, isScheduled: isScheduled, isDue: isDue, progress: progress, needsReminder: needsReminder,
     dayStats: dayStats, bonusStats: bonusStats, taskStreak: taskStreak, overallStreak: overallStreak,
@@ -1895,9 +1913,9 @@ var HISTORY_FROM = '2026-11';
 
 // Training-menu item id -> the history row it counts toward; warm-up style items (core, pelvic, hip, walk) count for nothing.
 function trainKindOf(item) {
-  item = String(item || '');
+  item = trainCanonItem_(String(item || ''));
   if (item.indexOf('run') === 0 || item === 'test10k') return '有氧';
-  if (item.indexOf('strength') === 0 || item.indexOf('home-') === 0 || item === 'kb-interval') return '重訓';
+  if (item.indexOf('strength') === 0 || item.indexOf('home-') === 0) return '重訓';
   if (item === 'yoga') return '瑜珈';
   return null;
 }
@@ -1953,9 +1971,10 @@ function isMealMoveTask_(t) {
 
 // Which watch types a 訓練 item can come from (ids from trainingMenu / extraStrengthCard).
 function effortWatchTypes_(item) {
+  item = trainCanonItem_(item);
+  if (item === 'home-interval') return ['HIIT'];
   if (/^run/.test(item)) return ['跑步', '跑步機', '走路', '健行', '登階', '爬樓梯機', '橢圓機', '室內單車'];
   if (item === 'yoga') return ['瑜伽'];
-  if (item === 'kb-interval') return ['HIIT'];
   if (/^(home|strength|extra)/.test(item)) return ['肌力訓練', '重量訓練', '徒手訓練'];
   return [];
 }
@@ -2012,7 +2031,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
   var trainMap = {}, trainOrder = [], trainRows = [], sameMin = 0, trainOnlyMin = 0;
   (data.train || []).forEach(function (r) {
     if (!inWeek(r.date) || !r.item || r.item.charAt(0) === '_') return;
-    var i = at[r.date], m = Number(r.minutes) || 0, title = titles[r.item] || r.item;
+    var i = at[r.date], m = Number(r.minutes) || 0, title = titles[trainCanonItem_(r.item)] || r.item;
     days[i].trainN++; days[i].trainMin += m; days[i].any = true;
     var types = effortWatchTypes_(r.item), best = null;
     watchRows.forEach(function (w) {
@@ -2061,4 +2080,252 @@ function effortWeek(data, anyDateInWeek, trainStart) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { effortWeek: effortWeek };
+}
+
+// 訓練週計畫（滾動式菜單）: activities done in the Mon–Sun week -> quotas filled -> the rest of the week re-planned.
+// Pure helpers, concatenated by build.py after effort.js. Depends on logic.js (addDays, weekdayOf, trainingMenu, trainCanonItem_).
+// Training is something you CAN do, never a to-do: nothing here touches 必做 rates, streaks or reminders.
+
+var TRAIN_KIND_NAMES_ = { cardio: '有氧', strength: '力量', yoga: '瑜珈', hip: '髖部放鬆', interval: '間歇', other: '其他' };
+var TRAIN_DAY_NAMES_ = ['一', '二', '三', '四', '五', '六', '日'];
+var WATCH_CARDIO_ = ['跑步', '跑步機', '走路', '健行', '登階', '爬樓梯機', '橢圓機', '室內單車'];
+var WATCH_STRENGTH_ = ['肌力訓練', '重量訓練', '徒手訓練'];
+var CARDIO_MIN_WATCH_ = 10;       // a watch cardio session shorter than this is not counted
+var WALK_MIN_WATCH_ = 20;         // ...and a watch 走路 needs this long (short commute walks are not training; same floor as Health.gs)
+var STRENGTH_HALF_BELOW_ = 30;    // strength with minutes filled in and under this counts as half a session
+var GYM_WATCH_MIN_ = 45;          // a watch strength session this long (and not ticked as a home item) counts as the gym session
+var NO_CREDIT_KINDS_ = ['cardio', 'strength', 'yoga', 'interval'];
+
+// Training item id -> quota kind. Warm-up style items (pelvic) and state rows count for nothing (null).
+function trainItemKind_(item) {
+  item = trainCanonItem_(String(item || ''));
+  if (item === 'home-interval' || item === 'x-interval') return 'interval';
+  if (/^run/.test(item) || item === 'test10k' || item === 'x-cardio') return 'cardio';
+  if (item === 'home-a' || item === 'home-b' || /^(strength|extra)/.test(item) || item === 'x-strength') return 'strength';
+  if (item === 'yoga' || item === 'x-yoga') return 'yoga';
+  if (item === 'hip') return 'hip';
+  if (item === 'x-other') return 'other';
+  return null;
+}
+
+function watchKindOf_(type) {
+  if (WATCH_CARDIO_.indexOf(type) >= 0) return 'cardio';
+  if (WATCH_STRENGTH_.indexOf(type) >= 0) return 'strength';
+  if (type === '瑜伽') return 'yoga';
+  if (type === 'HIIT') return 'interval';
+  return null;
+}
+
+function trainNum_(x) { var n = Number(x); return isFinite(n) && n > 0 ? n : 0; }
+
+function activityLabel_(a, type) {
+  var src = a.source === 'watch' ? '手錶' : a.source === 'manual' ? '手動' : '打勾';
+  var what = a.source === 'watch' ? (type || TRAIN_KIND_NAMES_[a.kind]) : TRAIN_KIND_NAMES_[a.kind];
+  return '週' + TRAIN_DAY_NAMES_[weekdayOf(a.date) - 1] + ' ' + (a.minutes ? a.minutes + ' 分 ' : '') + what + '（' + src + '）';
+}
+
+// Everything done in the Mon–Sun week that holds `date`, one entry per real workout:
+// {date, kind, minutes, source: 'tick'|'watch'|'manual', item, label, off}. A tick and a watch session of the same day and kind are ONE workout
+// (the watch's minutes win, the tick's item is kept). A 「_no-<kind>」 row turns that day's watch sessions of that kind off (still listed).
+function trainingActivities(date, train, workouts) {
+  var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), out = [], noCredit = {};
+  function inWeek(d) { return d >= start && d <= end; }
+  (train || []).forEach(function (r) {
+    var m = /^_no-(.+)$/.exec(String(r.item || ''));
+    if (m && inWeek(r.date) && NO_CREDIT_KINDS_.indexOf(m[1]) >= 0) noCredit[r.date + '|' + m[1]] = true;
+  });
+  var watch = [];
+  (workouts || []).forEach(function (w) {
+    var kind = watchKindOf_(w.type), min = trainNum_(w.minutes);
+    if (!kind || !inWeek(w.date)) return;
+    if (kind === 'cardio' && min < (w.type === '走路' ? WALK_MIN_WATCH_ : CARDIO_MIN_WATCH_)) return;
+    var a = { date: w.date, kind: kind, minutes: Math.round(min), source: 'watch', item: '', label: '', off: !!noCredit[w.date + '|' + kind], type: w.type };
+    watch.push(a); out.push(a);
+  });
+  (train || []).forEach(function (r) {
+    var item = String(r.item || ''), kind = trainItemKind_(item);
+    if (!kind || !inWeek(r.date)) return;
+    var manual = /^x-/.test(item), min = Math.round(trainNum_(r.minutes));
+    if (!manual && kind !== 'hip' && kind !== 'other') {
+      var best = null;
+      watch.forEach(function (w) {
+        if (w.date !== r.date || w.kind !== kind || w.claimed) return;
+        if (!best || Math.abs(w.minutes - min) < Math.abs(best.minutes - min)) best = w;
+      });
+      if (best) { best.claimed = true; best.item = trainCanonItem_(item); best.minutes = Math.max(best.minutes, min); return; }   // the larger one wins: a short auto-detected walk must not shrink the run you typed in
+    }
+    out.push({ date: r.date, kind: kind, minutes: min, source: manual ? 'manual' : 'tick', item: trainCanonItem_(item), label: '', off: false });
+  });
+  out.forEach(function (a) { a.label = activityLabel_(a, a.type); delete a.claimed; });
+  return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+}
+
+function strengthUnits_(a) { return a.minutes > 0 && a.minutes < STRENGTH_HALF_BELOW_ ? 0.5 : 1; }
+function isGymAct_(a) { return /^strength/.test(a.item) || (!a.item && a.minutes >= GYM_WATCH_MIN_); }
+
+// The session logged in the strength table (逐動作記錄) has no 「做了」 tick of its own: turn each such day into a home-a / home-b tick row,
+// unless that day already has a home-* row. -> [{date, item, minutes: 0, version: '', synthetic: true}]
+function homeStrengthTrainRows(train, strength, moves) {
+  var dayOf = {}, have = {}, seen = {}, out = [];
+  (moves || []).forEach(function (m) { dayOf[m.name] = m.day; });
+  (train || []).forEach(function (r) { if (r.item === 'home-a' || r.item === 'home-b') have[r.date] = true; });
+  (strength || []).forEach(function (r) {
+    if (!r.reps || !r.reps.length || have[r.date] || seen[r.date]) return;
+    seen[r.date] = true;
+    out.push({ date: r.date, item: dayOf[r.move] === 'B' ? 'home-b' : 'home-a', minutes: 0, version: '', synthetic: true });
+  });
+  return out;
+}
+
+// -> {cardioMin, strength, gym, home, yoga, hip, interval}. Off activities and 「其他」 count for nothing.
+function trainingCredits(activities) {
+  var c = { cardioMin: 0, strength: 0, gym: 0, home: 0, yoga: 0, hip: 0, interval: 0 };
+  (activities || []).forEach(function (a) {
+    if (a.off) return;
+    if (a.kind === 'cardio') c.cardioMin += a.minutes;
+    else if (a.kind === 'strength') {
+      var units = strengthUnits_(a);
+      if (isGymAct_(a)) c.gym += units; else c.home += units;
+      c.strength += units;
+    } else if (a.kind === 'yoga') c.yoga++;
+    else if (a.kind === 'hip') c.hip++;
+    else if (a.kind === 'interval') c.interval++;
+  });
+  return c;
+}
+
+// ---- 週計畫: fill the week's pool from what was done, then re-plan the rest ----
+var CARDIO_DONE_RATIO_ = 0.8;                         // a run slot filled this much counts as done
+var CARDIO_ORDER_ = ['run-long', 'run-z2', 'run-short'];   // minutes fill the core of the week first
+var TIER_RANK_ = { min: 0, std: 1, opt: 2 };
+
+function copyPlanItem_(it, date) {
+  var o = {};
+  for (var k in it) o[k] = it[k];
+  o.status = 'planned'; o.movedFrom = ''; o.credit = ''; o.remainingMin = 0; o.date = date; o.placed = date;
+  return o;
+}
+
+function isHeavyKind_(kind) { return kind === 'strength' || kind === 'interval'; }
+
+// -> {started, finished, week, weekStart, days: [{date, rest, items}], credits, activities, load}
+// items = trainingMenu items + {status: 'done'|'planned'|'missed', movedFrom, credit, remainingMin}.
+// `today` decides what is already behind you: only today and later days get suggestions. The week is Mon–Sun and nothing carries over.
+function trainingWeekPlan(date, start, train, workouts, today) {
+  train = train || []; workouts = workouts || [];
+  var menu = trainingMenu(date, start), weekStart = addDays(date, -(weekdayOf(date) - 1));
+  if (!menu.started) return { started: false, finished: false, week: 0, weekStart: weekStart, days: [], credits: trainingCredits([]), activities: [], load: null };
+  var acts = trainingActivities(date, train, workouts), cr = trainingCredits(acts);
+  var dates = [], pool = [], rest = {}, i;
+  for (i = 0; i < 7; i++) dates.push(addDays(weekStart, i));
+  dates.forEach(function (d) {
+    rest[d] = train.some(function (r) { return r.date === d && r.item === '_mode' && r.version === '休假'; });
+    trainingMenu(d, start).items.forEach(function (it) { pool.push(copyPlanItem_(it, d)); });
+  });
+  function byId(id) { return pool.filter(function (p) { return p.id === id; })[0]; }
+  function creditText(kind, date2) {
+    var l = acts.filter(function (a) { return !a.off && a.kind === kind && (!date2 || a.date === date2); }).map(function (a) { return a.label; });
+    return l.length ? '抵自 ' + l.join('、') : '';
+  }
+  function markDone(p, text) { p.status = 'done'; p.credit = text; }
+
+  // 1a. a tick of this very item fills it first and uses up its own share of the quota (so it can never also pay for another item)
+  var ownBy = {}, cardioLeft = cr.cardioMin, gymLeft = cr.gym, homeLeft = cr.home, intervalLeft = cr.interval;
+  acts.forEach(function (a) { if (!a.off && a.item) (ownBy[a.item] = ownBy[a.item] || []).push(a); });
+  pool.forEach(function (p) {
+    var own = ownBy[p.id], kind = trainItemKind_(p.id);
+    if (!own || (kind !== 'cardio' && kind !== 'strength' && kind !== 'interval')) return;
+    markDone(p, '抵自 ' + own.map(function (a) { return a.label; }).join('、'));
+    p.placed = own[0].date;   // it shows where you did it
+    var minutes = 0, units = 0;
+    own.forEach(function (a) { minutes += a.minutes; units += strengthUnits_(a); });
+    if (kind === 'cardio') cardioLeft = Math.max(0, cardioLeft - Math.min(p.minutes, minutes));
+    else if (kind === 'strength') { if (/^strength/.test(p.id)) gymLeft = Math.max(0, gymLeft - units); else homeLeft = Math.max(0, homeLeft - units); }
+    else intervalLeft = Math.max(0, intervalLeft - own.length);
+  });
+  // 1b. the rest of the cardio minutes, long run first
+  CARDIO_ORDER_.forEach(function (id) {
+    var p = byId(id);
+    if (!p || p.status === 'done') return;
+    var filled = Math.min(cardioLeft, p.minutes);
+    cardioLeft -= filled;
+    if (filled >= p.minutes * CARDIO_DONE_RATIO_) markDone(p, creditText('cardio'));
+    else p.remainingMin = p.minutes - filled;
+  });
+  // 1c. strength: the gym slot takes gym sessions, home sessions fill the unfilled home slot nearest to where they were done, leftovers spill over
+  var gymP = pool.filter(function (p) { return /^strength/.test(p.id); })[0];
+  var gymFill = 0;
+  if (gymP && gymP.status !== 'done') { gymFill = Math.min(1, gymLeft); homeLeft += gymLeft - gymFill; } else homeLeft += gymLeft;
+  var ref = null;
+  acts.forEach(function (a) { if (!a.off && a.kind === 'strength' && a.item !== 'home-a' && a.item !== 'home-b' && !isGymAct_(a) && (ref === null || a.date < ref)) ref = a.date; });
+  var homeSlots = [byId('home-a'), byId('home-b')].filter(function (p) { return p && p.status !== 'done'; });
+  if (ref !== null) homeSlots.sort(function (x, y) { return Math.abs(daysBetween(ref, x.date)) - Math.abs(daysBetween(ref, y.date)); });
+  homeSlots.forEach(function (p) {
+    var f = Math.min(1, homeLeft);
+    homeLeft -= f;
+    if (f >= 1) markDone(p, creditText('strength'));
+  });
+  if (gymP && gymP.status !== 'done') { gymFill += Math.min(1 - gymFill, homeLeft); if (gymFill >= 1) markDone(gymP, creditText('strength')); }
+  var ivP = byId('home-interval');
+  if (ivP && ivP.status !== 'done' && intervalLeft >= 1) markDone(ivP, creditText('interval'));
+  pool.forEach(function (p) {
+    if (p.id === 'yoga') { if (acts.some(function (a) { return !a.off && a.kind === 'yoga' && a.date === p.date; })) markDone(p, creditText('yoga', p.date)); }
+    else if (p.id === 'hip') {
+      if (acts.some(function (a) { return !a.off && (a.kind === 'hip' || a.kind === 'yoga') && a.date === p.date; })) markDone(p, creditText('yoga', p.date) || creditText('hip', p.date));
+    } else if (p.id === 'pelvic') { if (train.some(function (r) { return r.date === p.date && r.item === 'pelvic'; })) markDone(p, ''); }
+  });
+
+  // 2. what stays, what needs a new day
+  var first = today > weekStart ? today : weekStart, moving = [];
+  pool.forEach(function (p) {
+    if (p.status === 'done') return;
+    var kind = trainItemKind_(p.id), movable = !p.fixed && (kind === 'cardio' || kind === 'strength' || kind === 'interval');
+    if (rest[p.date]) { if (movable && p.date >= weekStart) moving.push(p); else p.placed = null; return; }
+    if (p.date === today && movable && isHeavyKind_(kind) && acts.some(function (x) { return !x.off && x.date === today && isHeavyKind_(x.kind); })) { moving.push(p); return; }   // today already has its heavy session
+    if (p.date >= today) return;
+    if (movable) moving.push(p); else p.status = 'missed';
+  });
+  moving.sort(function (a, b) { return TIER_RANK_[a.tier] - TIER_RANK_[b.tier] || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+  moving.forEach(function (p) { p.placed = null; p.status = 'planned'; });
+
+  function load(day, test) {
+    var n = 0;
+    pool.forEach(function (p) { if (p.status === 'planned' && p.placed === day && test(trainItemKind_(p.id))) n++; });
+    acts.forEach(function (a) { if (!a.off && a.date === day && test(a.kind)) n++; });
+    return n;
+  }
+  function fits(p, day) {
+    var kind = trainItemKind_(p.id);
+    if (rest[day] || day < first) return false;
+    if (load(day, function (k) { return k === 'cardio' || k === 'strength' || k === 'interval'; }) >= 2) return false;
+    if (isHeavyKind_(kind) && load(day, isHeavyKind_) >= 1) return false;
+    if (kind === 'strength') {
+      var isStrength = function (k) { return k === 'strength'; };
+      if (load(addDays(day, -1), isStrength) > 0 || load(addDays(day, 1), isStrength) > 0) return false;
+    }
+    return true;
+  }
+  moving.forEach(function (p) {
+    var orig = p.date, d, placed = null;
+    for (i = 0; i < 7 && !placed; i++) { d = dates[i]; if (fits(p, d)) placed = d; }
+    if (!placed && p.tier === 'min') {
+      for (i = 6; i >= 0 && !placed; i--) { if (!rest[dates[i]] && dates[i] >= first) placed = dates[i]; }
+    }
+    if (placed) { p.placed = placed; p.movedFrom = orig; }
+    else if (rest[orig]) p.placed = null;
+    else { p.placed = orig; p.status = 'missed'; }
+  });
+
+  // 3. the days
+  var days = dates.map(function (d) {
+    var items = rest[d] ? [] : pool.filter(function (p) { return p.placed === d; });
+    items.forEach(function (p) { delete p.placed; delete p.date; });
+    return { date: d, rest: !!rest[d], items: items };
+  });
+  var long = byId('run-long'), z2 = byId('run-z2'), shortRun = byId('run-short');
+  var mins = [long ? long.minutes : 0, z2 ? z2.minutes : 0, shortRun ? shortRun.minutes : 0];
+  return {
+    started: true, finished: menu.finished, week: menu.week, weekStart: weekStart, days: days, credits: cr, activities: acts,
+    load: { cardio: { done: cr.cardioMin, min: mins[0], std: mins[0] + mins[1], all: mins[0] + mins[1] + mins[2] }, strength: { done: cr.strength, min: 2, std: 3, all: 3 } }
+  };
 }

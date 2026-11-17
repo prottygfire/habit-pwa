@@ -1984,27 +1984,13 @@ function historyWithAuto(oldRows, data, today) {
 
 // 努力一覽 (weekly effort overview): facts only, no targets and no score.
 // Pulls one Monday–Sunday week out of data the app already loads: 飯前／飯後運動 ticks, 訓練 rows, 限時挑戰, 手錶運動.
-// Data: {tasks, logs, train, challenges, workouts}; trainStart: 'YYYY-MM-DD' of training week 1 (for item titles). Depends on logic.js / diet.js.
+// Data: {tasks, logs, train, challenges, workouts}; trainStart: 'YYYY-MM-DD' of training week 1 (for item titles). Depends on logic.js / diet.js / trainplan.js (the pairing of ticks with watch sessions is trainplan.js matchWatchSession_).
 
 function isMealMoveTask_(t) {
   return !!t && !isCounterTask(t) && /飯前|飯後/.test(t.name || '');
 }
 
-// Which watch types a 訓練 item can come from (ids from trainingMenu / extraStrengthCard).
 var EFFORT_MANUAL_TITLES_ = { 'x-cardio': '手動：有氧', 'x-strength': '手動：力量', 'x-yoga': '手動：瑜珈', 'x-interval': '手動：間歇', 'x-other': '手動：其他' };
-
-function effortWatchTypes_(item) {
-  item = trainCanonItem_(item);
-  if (item === 'x-cardio') return ['跑步', '跑步機', '走路', '健行', '登階', '爬樓梯機', '橢圓機', '室內單車'];
-  if (item === 'x-strength') return ['肌力訓練', '重量訓練', '徒手訓練'];
-  if (item === 'x-yoga') return ['瑜伽'];
-  if (item === 'x-interval') return ['HIIT'];
-  if (item === 'home-interval') return ['HIIT'];
-  if (/^run/.test(item)) return ['跑步', '跑步機', '走路', '健行', '登階', '爬樓梯機', '橢圓機', '室內單車'];
-  if (item === 'yoga') return ['瑜伽'];
-  if (/^(home|strength|extra)/.test(item)) return ['肌力訓練', '重量訓練', '徒手訓練'];
-  return [];
-}
 
 function effortDayList_(start) {
   var out = [];
@@ -2048,7 +2034,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     if (!inWeek(w.date)) return;
     var i = at[w.date], m = Number(w.minutes) || 0;
     days[i].watchMin += m; days[i].watchN++; days[i].any = true;
-    watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '' });
+    watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '', kind: watchKindOf_(w.type) });
   });
 
   // 訓練: titles come from the menu of that day (the item ids are the same all weeks).
@@ -2060,13 +2046,8 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     if (!inWeek(r.date) || !r.item || r.item.charAt(0) === '_') return;
     var i = at[r.date], m = Number(r.minutes) || 0, title = titles[trainCanonItem_(r.item)] || EFFORT_MANUAL_TITLES_[r.item] || r.item;
     days[i].trainN++; days[i].trainMin += m; days[i].any = true;
-    var types = effortWatchTypes_(r.item), best = null;
-    watchRows.forEach(function (w) {
-      if (w.date !== r.date || w.trainItem || types.indexOf(w.type) < 0) return;
-      if (/^x-/.test(r.item) && Math.abs(w.minutes - m) > 0.3 * Math.max(w.minutes, m)) return;   // a manual entry is the same session only when the minutes are close
-      if (!best || Math.abs(w.minutes - m) < Math.abs(best.minutes - m)) best = w;
-    });
-    if (best) { best.trainItem = r.item; best.trainTitle = title; sameMin += m; } else trainOnlyMin += m;
+    var best = matchWatchSession_(watchRows, r.date, trainItemKind_(r.item), m, /^x-/.test(r.item));   // the same pairing rule as the training plan (trainplan.js)
+    if (best) { best.claimed = true; best.trainItem = r.item; best.trainTitle = title; sameMin += m; } else trainOnlyMin += m;
     trainRows.push({ date: r.date, item: r.item, title: title, minutes: m, watch: best ? { type: best.type, minutes: best.minutes } : null });
     if (!trainMap[r.item]) { trainMap[r.item] = { item: r.item, title: title, sessions: 0, minutes: 0, withWatch: 0 }; trainOrder.push(r.item); }
     trainMap[r.item].sessions++; trainMap[r.item].minutes += m; if (best) trainMap[r.item].withWatch++;
@@ -2121,6 +2102,7 @@ var WATCH_STRENGTH_ = ['肌力訓練', '重量訓練', '徒手訓練'];
 var CARDIO_MIN_WATCH_ = 10;       // a watch cardio session shorter than this is not counted
 var WALK_MIN_WATCH_ = 10;         // a watch 走路 needs this long (11/16: lowered from 20 to 10; same floor as Health.gs), and its heart rate must be in the Zone 2 band
 var STRENGTH_HALF_BELOW_ = 20;    // strength with minutes filled in and under this counts as half a session (11/17: 30 -> 20, your sessions are at least 20 minutes)
+var HOME_SESSION_MIN_MOVES_ = 2;   // moves logged in one day before the strength table counts as a home session
 var SAME_SESSION_RATIO_ = 0.3;    // a manual entry within 30% of a same-day, same-kind watch session is that session, not a second one
 var NO_CREDIT_KINDS_ = ['cardio', 'strength', 'yoga', 'interval'];
 var ZONE2_HR_ = [113, 132];        // a watch walk counts only when its average heart rate is inside this band (same default as Health.gs)
@@ -2149,7 +2131,7 @@ function watchKindOf_(type) {
 function trainNum_(x) { var n = Number(x); return isFinite(n) && n > 0 ? n : 0; }
 
 function activityLabel_(a, type) {
-  var src = a.source === 'watch' ? '手錶' : a.source === 'manual' ? '手動' : '打勾';
+  var src = a.source === 'watch' ? '手錶' : a.source === 'manual' ? '手動' : a.fromLog ? '動作記錄' : '打勾';
   var what = a.source === 'watch' ? (type || TRAIN_KIND_NAMES_[a.kind]) : TRAIN_KIND_NAMES_[a.kind];
   if (a.also) src += '＋' + a.also;
   return '週' + TRAIN_DAY_NAMES_[weekdayOf(a.date) - 1] + ' ' + (a.minutes ? a.minutes + ' 分 ' : '') + what + '（' + src + '）';
@@ -2186,27 +2168,30 @@ function trainingActivities(date, train, workouts, zone) {
     if (!kind || !inWeek(r.date)) return;
     var manual = /^x-/.test(item), min = Math.round(trainNum_(r.minutes));
     if (!manual && kind !== 'hip' && kind !== 'other') {
-      var best = null;
-      watch.forEach(function (w) {
-        if (w.date !== r.date || w.kind !== kind || w.claimed || w.off) return;
-        if (!best || Math.abs(w.minutes - min) < Math.abs(best.minutes - min)) best = w;
-      });
-      if (best) { best.claimed = true; best.item = trainCanonItem_(item); best.minutes = Math.max(best.minutes, min); if (!/^自動/.test(String(r.note || ''))) best.also = '打勾'; return; }   // the larger one wins: a short auto-detected walk must not shrink the run you typed in
+      var best = matchWatchSession_(watch, r.date, kind, min, false);
+      if (best) { best.claimed = true; best.item = trainCanonItem_(item); best.minutes = Math.max(best.minutes, min); if (!/^自動/.test(String(r.note || ''))) best.also = r.synthetic ? '動作記錄' : '打勾'; return; }   // the larger one wins: a short auto-detected walk must not shrink the run you typed in
     }
     if (manual && kind !== 'other') {
-      var mate = null;
-      watch.forEach(function (w) {
-        if (w.date !== r.date || w.kind !== kind || w.claimed || w.off) return;
-        if (Math.abs(w.minutes - min) > SAME_SESSION_RATIO_ * Math.max(w.minutes, min)) return;
-        if (!mate || Math.abs(w.minutes - min) < Math.abs(mate.minutes - min)) mate = w;
-      });
+      var mate = matchWatchSession_(watch, r.date, kind, min, true);
       if (mate) { mate.claimed = true; mate.minutes = Math.max(mate.minutes, min); mate.also = '手動'; mate.manualItem = item; return; }
     }
     if (!manual && /^自動/.test(String(r.note || '')) && watch.some(function (w) { return w.date === r.date && w.kind === kind; })) return;
-    out.push({ date: r.date, kind: kind, minutes: min, source: manual ? 'manual' : 'tick', item: trainCanonItem_(item), label: '', off: false });
+    out.push({ date: r.date, kind: kind, minutes: min, source: manual ? 'manual' : 'tick', item: trainCanonItem_(item), label: '', off: false, fromLog: !!r.synthetic });
   });
   out.forEach(function (a) { a.label = activityLabel_(a, a.type); delete a.claimed; });
   return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+}
+
+// The watch session of the same day and kind that a tick or a manual entry stands for (the closest in minutes), or null. Sessions already claimed or
+// switched off never match, and a manual entry only matches a session of similar length. One rule for the plan AND the 努力 page (effort.js).
+function matchWatchSession_(sessions, date, kind, min, manual) {
+  var best = null;
+  sessions.forEach(function (w) {
+    if (w.date !== date || w.kind !== kind || w.claimed || w.off) return;
+    if (manual && Math.abs(w.minutes - min) > SAME_SESSION_RATIO_ * Math.max(w.minutes, min)) return;
+    if (!best || Math.abs(w.minutes - min) < Math.abs(best.minutes - min)) best = w;
+  });
+  return best;
 }
 
 function strengthUnits_(a) { return a.minutes > 0 && a.minutes < STRENGTH_HALF_BELOW_ ? 0.5 : 1; }
@@ -2216,13 +2201,17 @@ function isGymAct_(a) { return /^strength/.test(a.item); }
 // The session logged in the strength table (逐動作記錄) has no 「做了」 tick of its own: turn each such day into a home-a / home-b tick row,
 // unless that day already has a home-* row. -> [{date, item, minutes: 0, version: '', synthetic: true}]
 function homeStrengthTrainRows(train, strength, moves) {
-  var dayOf = {}, have = {}, seen = {}, out = [];
+  var dayOf = {}, have = {}, byDate = {}, order = [], out = [];
   (moves || []).forEach(function (m) { dayOf[m.name] = m.day; });
   (train || []).forEach(function (r) { if (r.item === 'home-a' || r.item === 'home-b') have[r.date] = true; });
   (strength || []).forEach(function (r) {
-    if (!r.reps || !r.reps.length || have[r.date] || seen[r.date]) return;
-    seen[r.date] = true;
-    out.push({ date: r.date, item: dayOf[r.move] === 'B' ? 'home-b' : 'home-a', minutes: 0, version: '', synthetic: true });
+    if (!r.reps || !r.reps.length || have[r.date]) return;
+    if (!byDate[r.date]) { byDate[r.date] = { moves: {}, n: 0, day: dayOf[r.move] === 'B' ? 'home-b' : 'home-a' }; order.push(r.date); }
+    if (!byDate[r.date].moves[r.move]) { byDate[r.date].moves[r.move] = true; byDate[r.date].n++; }
+  });
+  order.forEach(function (d) {
+    // a single move (say, only the core exercise) is not a strength session
+    if (byDate[d].n >= HOME_SESSION_MIN_MOVES_) out.push({ date: d, item: byDate[d].day, minutes: 0, version: '', synthetic: true });
   });
   return out;
 }
@@ -2330,11 +2319,18 @@ function trainingWeekPlan(date, start, train, workouts, today, zone) {
 
   // 2. what stays, what needs a new day
   var first = today > weekStart ? today : weekStart, moving = [];
+  // what you did on the day before this week also counts for spacing (a Sunday session keeps Monday's strength from landing right after it)
+  var prevDay = addDays(weekStart, -1);
+  var ctxActs = acts.concat(trainingActivities(prevDay, train, workouts, zone).filter(function (x) { return x.date === prevDay; }));
+  function strengthDoneNear(day) {
+    return [-1, 0, 1].some(function (o) { return ctxActs.some(function (x) { return !x.off && x.kind === 'strength' && x.date === addDays(day, o); }); });
+  }
   pool.forEach(function (p) {
     if (p.status === 'done') return;
     var kind = trainItemKind_(p.id), movable = !p.fixed && (kind === 'cardio' || kind === 'strength' || kind === 'interval');
     if (rest[p.date]) { if (movable && p.date >= weekStart) moving.push(p); else p.placed = null; return; }
     if (p.date === today && movable && isHeavyKind_(kind) && acts.some(function (x) { return !x.off && x.date === today && isHeavyKind_(x.kind); })) { moving.push(p); return; }   // today already has its heavy session
+    if (p.date >= today && movable && kind === 'strength' && strengthDoneNear(p.date)) { moving.push(p); return; }   // strength was just done: do not stack another one next to it
     if (p.date >= today) return;
     if (movable) moving.push(p); else p.status = 'missed';
   });
@@ -2344,7 +2340,7 @@ function trainingWeekPlan(date, start, train, workouts, today, zone) {
   function load(day, test) {
     var n = 0;
     pool.forEach(function (p) { if (p.status === 'planned' && p.placed === day && test(trainItemKind_(p.id))) n++; });
-    acts.forEach(function (a) { if (!a.off && a.date === day && test(a.kind)) n++; });
+    ctxActs.forEach(function (a) { if (!a.off && a.date === day && test(a.kind)) n++; });
     return n;
   }
   function fits(p, day) {

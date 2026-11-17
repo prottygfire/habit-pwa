@@ -50,12 +50,16 @@
       o.push('</g></mask></defs>');
       o.push('<rect data-fog="on" width="' + W + '" height="' + H + '" fill="' + PAPER + '" opacity="0.92" mask="url(#rmm' + uid + ')"/>');
     }
-    // 精通星：Lv20 之後每多一級一顆，排在終點地標上方（最多畫 10 顆，超過的看彈窗）
+    // 精通星：Lv20 之後每多一級一顆，排在地圖左上角（半透明底，各區都不會被畫面邊緣切到；最多畫 10 顆，超過的看彈窗）
     var nStars = Math.min(10, window.roadmapStars({ level: level }));
-    for (var si = 0; si < nStars; si++) {
-      var sx = cfg.landmark.x * W + (si - (nStars - 1) / 2) * W * 0.04, sy = cfg.landmark.y * H - R * 0.95, sr = W * 0.017, spts = [];
-      for (var q = 0; q < 10; q++) { var ang = -Math.PI / 2 + q * Math.PI / 5, rr = q % 2 ? sr * 0.45 : sr; spts.push((sx + Math.cos(ang) * rr).toFixed(1) + ',' + (sy + Math.sin(ang) * rr).toFixed(1)); }
-      o.push('<polygon data-star="' + (si + 1) + '" points="' + spts.join(' ') + '" fill="' + GOLD + '" stroke="' + INK + '" stroke-width="3" stroke-linejoin="round"/>');
+    if (nStars) {
+      var gap = W * 0.04, sr = W * 0.017, x0 = W * 0.045, y0 = H * 0.04, padX = W * 0.02;
+      o.push('<rect x="' + (x0 - padX).toFixed(1) + '" y="' + (y0 - sr * 1.5).toFixed(1) + '" width="' + ((nStars - 1) * gap + padX * 2).toFixed(1) + '" height="' + (sr * 3).toFixed(1) + '" rx="' + (sr * 1.5).toFixed(1) + '" fill="rgba(59,42,26,0.6)"/>');
+      for (var si = 0; si < nStars; si++) {
+        var sx = x0 + si * gap, spts = [];
+        for (var q = 0; q < 10; q++) { var ang = -Math.PI / 2 + q * Math.PI / 5, rr = q % 2 ? sr * 0.45 : sr; spts.push((sx + Math.cos(ang) * rr).toFixed(1) + ',' + (y0 + Math.sin(ang) * rr).toFixed(1)); }
+        o.push('<polygon data-star="' + (si + 1) + '" points="' + spts.join(' ') + '" fill="#FFD34D" stroke="' + INK + '" stroke-width="2" stroke-linejoin="round"/>');
+      }
     }
     // 點擊範圍：每個路標一個透明大圓（霧上面也點得到）
     for (var h2 = 0; h2 < wp.length; h2++) {

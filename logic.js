@@ -2536,6 +2536,17 @@ function roadmapStops(from, to) {
 
 function roadmapZoomClamp(z) { return z >= 1 ? Math.min(4, z) : 1; }
 
+// 預覽用：把一個技能「假裝」成 level 等級（位置、星星、說明都跟著算），回傳新物件，原本的不動；level 不合理就原樣回傳
+function roadmapPreviewSkill(sk, level) {
+  level = parseInt(level, 10);
+  if (!(level >= 1 && level <= 99)) return sk;
+  var start = levelCum(level), next = levelCum(level + 1);
+  var out = {};
+  for (var k in sk) out[k] = sk[k];
+  out.level = level; out.levelStart = start; out.nextAt = next; out.sp = start + (next - start) * 0.4; out.gain = 0;
+  return out;
+}
+
 // 手機返回鍵：App 內每個「頁」和「彈窗層」對應一筆瀏覽器歷史紀錄。純函式，不碰 window／document。
 // prev／cur ＝ {page: 'tab|region', layer: ''|'modal'|'edit'}；回傳要對歷史紀錄做的動作（依序）：
 //   pushPage 換頁並新增一筆；replacePage 換頁但取代目前那筆（彈窗開著時換頁，不留彈窗那一層）；

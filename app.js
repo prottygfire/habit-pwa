@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v37';
+  var VERSION = '2026-11-17 v38';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -2160,16 +2160,30 @@
     var cfg = state.mapCfg;
     var nodes = [h('h1', null, '冒險地圖・總等級 ' + g.totalLevel)];
     var s = state.mapRegion;
-    if (!s || !g.skills[s]) {
+    // 預覽：假裝所有技能都到某等級，只看地圖長怎樣；只存在這一次開啟 App 的記憶體，不寫進任何資料
+    var pvLv = state.mapPreview || 0, skills = g.skills;
+    if (pvLv) {
+      skills = {};
+      SKILLS.forEach(function (n) {
+        var pv = roadmapPreviewSkill(g.skills[n], pvLv);
+        pv.title = skillTitle(n, pvLv); pv.toNext = pv.nextAt - pv.sp;
+        skills[n] = pv;
+      });
+      nodes.push(h('div', { class: 'card' }, h('div', { class: 'muted' }, '🔍 預覽模式：假裝所有技能都是 Lv' + pvLv + '，只是看效果，不影響你的真實等級與紀錄。重新開啟 App 也會自動回到正常。'),
+        h('button', { class: 'btn small', style: 'margin-top:8px', onclick: function () { state.mapPreview = 0; render(); } }, '關閉預覽')));
+    }
+    if (!s || !skills[s]) {
       var box = h('div');
-      box.innerHTML = RoadmapView.worldHtml(cfg, g.skills);
+      box.innerHTML = RoadmapView.worldHtml(cfg, skills);
       Array.prototype.forEach.call(box.querySelectorAll('.rm-entry'), function (b) {
         b.addEventListener('click', function () { state.mapRegion = b.getAttribute('data-skill'); render(); window.scrollTo(0, 0); });
       });
       nodes.push(box, h('p', { class: 'muted' }, '點一個區域，看你在路上走到哪。每天打卡的技能點會讓旅人往前一小段。'));
+      nodes.push(h('div', { class: 'row', style: 'flex-wrap:wrap' }, h('span', { class: 'muted' }, '🔍 預覽到頂之後的樣子：'),
+        [21, 25, 30].map(function (n) { return h('button', { class: 'btn small' + (pvLv === n ? ' primary' : ''), type: 'button', onclick: function () { state.mapPreview = n; render(); } }, 'Lv' + n); })));
       return nodes;
     }
-    var sk = g.skills[s], p = skillPos(sk);
+    var sk = skills[s], p = skillPos(sk);
     nodes.push(h('button', { class: 'btn small', onclick: function () { navBack('map', ''); } }, '‹ 世界地圖'));
     nodes.push(h('div', { class: 'card' },
       h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'),
@@ -2180,8 +2194,8 @@
     var svgBox = h('div');
     if (state.mapMount) state.mapMount.destroy();
     state.mapMount = RoadmapView.mountRegion(svgBox, {
-      cfg: cfg, skill: s, sk: sk, pos: p.pos, prev: p.prev, view: state.mapView, seen: seen, anim: PREFS.anim, debug: /mapdebug/.test(location.search),
-      onSeen: function () { seenAll[s] = { pos: p.pos, level: sk.level }; LS.set('habit.mapSeen', seenAll); }
+      cfg: cfg, skill: s, sk: sk, pos: p.pos, prev: p.prev, view: state.mapView, seen: pvLv ? null : seen, anim: PREFS.anim, debug: /mapdebug/.test(location.search),
+      onSeen: pvLv ? null : function () { seenAll[s] = { pos: p.pos, level: sk.level }; LS.set('habit.mapSeen', seenAll); }
     });
     nodes.push(svgBox);
     return nodes;

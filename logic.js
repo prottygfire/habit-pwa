@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js and trainplan.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js and roadmap.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -2438,4 +2438,61 @@ function attributeActivities_(acts, pool) {
       pool.forEach(function (p) { if (p.id === 'hip' && p.date === a.date && p.status === 'done' && !yogaToo) add(a, p, 'units', 1); });
     }
   });
+}
+
+// 冒險地圖：把技能點換成地圖上的位置（0～19，對應 Lv1～Lv20 的 20 個路標）。
+// 純函式，不碰 window／document；會被併進 Apps Script，所以函式名一律以 roadmap 開頭。
+// 依賴 game.js 的 levelOf、levelCum、SKILLS。
+
+var ROADMAP_MAX_POS = 19;
+
+// sk = computeGame().skills[技能] 的 {sp, level, levelStart, nextAt, gain}
+function roadmapPos(sk) {
+  if (sk.level >= 20) return ROADMAP_MAX_POS;
+  var span = sk.nextAt - sk.levelStart;
+  if (span <= 0) return sk.level - 1;
+  return (sk.level - 1) + Math.max(0, Math.min(1, (sk.sp - sk.levelStart) / span));
+}
+
+// 今天之前的位置：把今天賺的技能點扣回去再算一次（可能跨級）
+function roadmapPrevPos(sk) {
+  var gain = sk.gain || 0;
+  if (gain <= 0) return roadmapPos(sk);
+  var p = sk.sp - gain;
+  var lv = levelOf(p);
+  if (lv >= 20) return ROADMAP_MAX_POS;
+  var start = levelCum(lv), span = levelCum(lv + 1) - start;
+  return (lv - 1) + (span > 0 ? (p - start) / span : 0);
+}
+
+// waypoints 為 20 個 {x,y}（0–1 比例）；段內線性內插，超界夾住
+function roadmapPoint(waypoints, pos) {
+  var last = waypoints.length - 1;
+  var p = Math.max(0, Math.min(last, pos));
+  var i = Math.floor(p);
+  if (i >= last) return { x: waypoints[last].x, y: waypoints[last].y };
+  var t = p - i, a = waypoints[i], b = waypoints[i + 1];
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+// 從 from 到 to 等分取 steps+1 個點（畫路線、揭霧用）
+function roadmapTrail(waypoints, from, to, steps) {
+  var out = [];
+  for (var i = 0; i <= steps; i++) out.push(roadmapPoint(waypoints, from + (to - from) * (i / steps)));
+  return out;
+}
+
+// skills = game().skills；回傳今天增加最多的技能，全 0 回 null；同分取 SKILLS 順序
+function roadmapPickToday(skills) {
+  var best = null;
+  SKILLS.forEach(function (s) {
+    var sk = skills[s];
+    if (!sk || !(sk.gain > 0)) return;
+    if (!best || sk.gain > best.gain) best = { skill: s, gain: sk.gain, pos: roadmapPos(sk), prev: roadmapPrevPos(sk) };
+  });
+  return best;
+}
+
+function roadmapCaption(skill, gain, goal) {
+  return skill + ' +' + gain + '，往' + goal + '走了一小段';
 }

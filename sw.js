@@ -1,7 +1,7 @@
 ﻿// App-shell cache so the PWA opens offline. API calls (other origin) are never cached.
 // GitHub Pages sends Cache-Control: max-age=600, so every fetch here revalidates ('no-cache') to pick up new versions at once.
-var CACHE = 'habit-shell-v12';
-var SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+var CACHE = 'habit-shell-v14';
+var SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'map.js', 'map/maps.json', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) {

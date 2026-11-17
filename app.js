@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v31';
+  var VERSION = '2026-11-17 v33';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -13,7 +13,7 @@
   var UNIT = { weekly_n: '週', monthly_n: '月', quarterly_n: '季', weekly_min: '週', monthly_min: '月' };
   var WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
   var ICON_CHOICES = ['💪', '🏃', '🚶', '🤸', '🏋️', '🧘', '🙆', '👟', '💧', '😴', '🧴', '🥗', '📖', '✍️', '💰', '📒', '🎯', '🎮', '🎨', '🧹', '💊', '☀️', '🌙'];
-  var TABS = ['today', 'ledger', 'train', 'effort', 'health', 'more', 'game', 'rewards', 'dreams', 'tasks', 'plan', 'settings'];
+  var TABS = ['today', 'ledger', 'train', 'effort', 'health', 'more', 'game', 'rewards', 'dreams', 'map', 'tasks', 'plan', 'settings'];
 
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -748,7 +748,7 @@
     var seg = h('div', { class: 'seg' }, [['habits', '日常作息'], ['todo', '待辦事項']].map(function (p) {
       return h('button', { class: 'btn' + (pane === p[0] ? ' on' : ''), 'aria-pressed': String(pane === p[0]), onclick: function () { state.homePane = p[0]; render(); } }, p[1]);
     }));
-    return [seg].concat(pane === 'todo' ? todoPane(ledgerState()) : renderTodayHabits());
+    return [seg].concat(pane === 'todo' ? todoPane(ledgerState()) : renderTodayHabits().concat(roadmapTodayCard() || []));
   }
 
   function renderTodayHabits() {
@@ -1404,7 +1404,7 @@
 
   // ---- 更多 (the pages that used to be separate tabs) ----
 
-  var SUB_PAGES = ['ledger', 'game', 'rewards', 'dreams', 'tasks', 'plan', 'settings'];
+  var SUB_PAGES = ['ledger', 'game', 'rewards', 'dreams', 'map', 'tasks', 'plan', 'settings'];
   function navTabOf(tab) { return SUB_PAGES.indexOf(tab) >= 0 ? 'more' : tab; }
 
   function goTab(tab) {
@@ -1420,13 +1420,14 @@
       ['game', '🏅', '成就', '技能等級、本月打卡、成就徽章'],
       ['rewards', '⭐', '星幣與兌換', '星幣餘額、兌換獎勵、免責券、兌換紀錄'],
       ['dreams', '🌠', '夢想', '50 夢想清單與自動進度（資料在「50夢想」試算表）'],
+      ['map', '🗺', '冒險地圖', '五個技能的冒險地圖，今天往前走了多少'],
       ['tasks', '🗂', '任務', '新增、修改、排序、設定核心任務'],
       ['plan', '📅', '月/季', '三大目標、月回顧、月/季規劃'],
       ['settings', '⚙️', '設定', '連線、動畫、自評額外題目']
     ];
     var nodes = [h('h1', null, '更多')];
     items.forEach(function (it) {
-      nodes.push(h('button', { class: 'card more', onclick: function () { goTab(it[0]); } },
+      nodes.push(h('button', { class: 'card more', onclick: function () { if (it[0] === 'map') state.mapRegion = null; goTab(it[0]); } },
         h('div', { class: 'name' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, it[1]), it[2]), h('div', { class: 'muted' }, it[3])));
     });
     return nodes;
@@ -2079,6 +2080,57 @@
   }
 
   // 星幣與兌換 (moved here from 成就 on 2026-11-16: nothing had been redeemed in four weeks, so it no longer takes room on the 成就 page)
+  // ---- 冒險地圖 ----
+
+  var ROADMAP_GOALS = { '體能': '山頂', '健康': '泉水', '財商': '城門', '學習': '塔頂', '關係': '湖心' };
+
+  function loadMapCfg() {
+    if (state.mapLoading || state.mapLoaded) return;
+    state.mapLoading = true;
+    RoadmapView.load().then(function (cfg) {
+      state.mapCfg = cfg; state.mapLoaded = true; state.mapLoading = false;
+      if (state.tab === 'map') render();
+    });
+  }
+
+  function skillPos(sk) { return { pos: roadmapPos(sk), prev: roadmapPrevPos(sk) }; }
+
+  function renderMap() {
+    var g = game();
+    loadMapCfg();
+    var cfg = state.mapCfg;
+    var nodes = [h('h1', null, '冒險地圖・總等級 ' + g.totalLevel)];
+    var s = state.mapRegion;
+    if (!s || !g.skills[s]) {
+      var box = h('div');
+      box.innerHTML = RoadmapView.worldHtml(cfg, g.skills);
+      Array.prototype.forEach.call(box.querySelectorAll('.rm-entry'), function (b) {
+        b.addEventListener('click', function () { state.mapRegion = b.getAttribute('data-skill'); render(); window.scrollTo(0, 0); });
+      });
+      nodes.push(box, h('p', { class: 'muted' }, '點一個區域，看你在路上走到哪。每天打卡的技能點會讓旅人往前一小段。'));
+      return nodes;
+    }
+    var sk = g.skills[s], p = skillPos(sk);
+    nodes.push(h('button', { class: 'btn small', onclick: function () { state.mapRegion = null; render(); } }, '‹ 世界地圖'));
+    nodes.push(h('div', { class: 'card' },
+      h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'),
+      h('div', { class: 'muted' }, sk.level >= 20 ? '已走到終點，霧全散了。' : '還差 ' + fmtPts(sk.toNext) + ' 點升級・今天 +' + fmtPts(sk.gain))));
+    var svgBox = h('div');
+    svgBox.innerHTML = RoadmapView.regionSvg(cfg && cfg[s], p.pos, p.prev, { anim: PREFS.anim, debug: /mapdebug/.test(location.search), level: sk.level, uid: 'r' });
+    nodes.push(svgBox);
+    return nodes;
+  }
+
+  // 今日頁底部的小卡：今天增加最多的技能往前走了一小段；沒有進度就不出現
+  function roadmapTodayCard() {
+    if (!state.data || !state.cfg || state.date !== today()) return null;
+    var pick = roadmapPickToday(game().skills);
+    if (!pick) return null;
+    return h('button', { class: 'card rm-card', onclick: function () { state.mapRegion = pick.skill; goTab('map'); } },
+      h('div', { class: 'name' }, '🗺 ' + roadmapCaption(pick.skill, fmtPts(pick.gain), ROADMAP_GOALS[pick.skill] || '前方')),
+      h('div', { class: 'rm-bar' }, h('u', { style: 'width:' + Math.round(pick.pos / 19 * 100) + '%' })));
+  }
+
   function renderRewards() {
     var g = game(), t0 = today();
     var nodes = [
@@ -2631,7 +2683,7 @@
     var tab = state.cfg ? state.tab : 'settings';
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
-    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'effort' ? renderEffort() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'rewards' ? renderRewards() : tab === 'dreams' ? renderDreams() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
+    else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'effort' ? renderEffort() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'rewards' ? renderRewards() : tab === 'dreams' ? renderDreams() : tab === 'map' ? renderMap() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());
     var focusId = document.activeElement && document.activeElement.id;
     var keepY = window.scrollY;
     view.textContent = '';

@@ -275,3 +275,21 @@ td.auto { font-weight: 600; }
 /* 一次補登 */
 .catchrow { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 12px; }
 .catchrow.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+/* ---- 冒險地圖 ---- */
+.rm-svg { width: 100%; height: auto; display: block; border-radius: 12px; border: 1px solid var(--line); background: #E8D9B0; }
+.rm-world { position: relative; border-radius: 12px; overflow: hidden; }
+.rm-worldimg { width: 100%; display: block; border-radius: 12px; }
+.rm-entry { position: absolute; transform: translate(-50%, -50%); min-width: 76px; padding: 6px 10px; border-radius: 12px; border: 2px solid #3B2A1A; background: rgba(232, 217, 176, .92); color: #3B2A1A; text-align: center; cursor: pointer; display: flex; flex-direction: column; gap: 2px; align-items: center; }
+.rm-entry span { font-size: .75rem; }
+.rm-bar { display: block; width: 100%; height: 5px; border-radius: 99px; background: rgba(59, 42, 26, .2); overflow: hidden; }
+.rm-bar u { display: block; height: 100%; background: #B5603A; text-decoration: none; }
+.rm-nomap { display: flex; flex-direction: column; gap: 8px; }
+.rm-nomap .rm-entry { position: static; transform: none; width: 100%; flex-direction: row; justify-content: space-between; }
+.rm-nomap .rm-bar { width: 40%; }
+.rm-card { display: block; width: 100%; text-align: left; cursor: pointer; }
+.rm-card .rm-bar { background: var(--track); margin-top: 8px; }
+.rm-pulse { animation: rm-pulse 1.6s ease-in-out infinite; transform-box: fill-box; }
+.rm-glow { animation: rm-glow 1.8s ease-in-out infinite; }
+@keyframes rm-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+@keyframes rm-glow { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }

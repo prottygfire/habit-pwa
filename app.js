@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v36';
+  var VERSION = '2026-11-17 v37';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -425,7 +425,7 @@
     if (total <= 0) { if (isDone(t, date, ctx().idx)) uncheckTask(t, date); return; }
     checkTask(t, date, '標準', squatNote(total));
   }
-  function squatBox(date) {
+  function squatBox(date, noHead) {
     var t = squatTask(), box = h('div', { class: 'squat' });
     function now() { return squatTotal(noteOn(t, date, ctx().idx)); }
     function bump(delta) {
@@ -436,7 +436,7 @@
     function paint() {
       box.textContent = '';
       var cur = now();
-      box.appendChild(h('div', { class: 'row' },
+      if (!noHead) box.appendChild(h('div', { class: 'row' },
         h('div', { class: 'grow' }, h('div', { class: 'name' }, '🦵 深蹲'), h('div', { class: 'muted' }, '加分・隨時記，沒有目標、不催')),
         h('div', null, h('b', { class: 'squat-n' }, cur), ' 下')));
       box.appendChild(h('div', { class: 'muted' }, (date === today() ? '今天' : dateTitle(date)) + ' ' + cur + ' 下・本週 ' + squatWeekSum(state.data.logs, date) + ' 下'));
@@ -455,9 +455,15 @@
     paint();
     return box;
   }
+  // 訓練頁的深蹲卡片：標題列點一下收合／展開（記在手機上），收合時只剩一行今天與本週的下數
   function squatCard(date) {
-    if (!squatTask() || date > today()) return null;
-    return h('div', { class: 'card' }, squatBox(date));
+    var t = squatTask();
+    if (!t || date > today()) return null;
+    var folded = !!LS.get('habit.squatFold', false), cur = squatTotal(noteOn(t, date, ctx().idx));
+    var head = h('button', { class: 'squat-head', type: 'button', 'aria-expanded': String(!folded), onclick: function () { LS.set('habit.squatFold', !folded); render(); } },
+      h('span', { class: 'grow' }, h('span', { class: 'name' }, '🦵 深蹲'), h('span', { class: 'muted' }, '　' + (date === today() ? '今天' : md(date)) + ' ' + cur + ' 下・本週 ' + squatWeekSum(state.data.logs, date) + ' 下')),
+      h('span', { 'aria-hidden': 'true' }, folded ? '▸' : '▾'));
+    return h('div', { class: 'card' }, head, folded ? null : squatBox(date, true));
   }
   function squatModal(m) {
     return modalShell('深蹲', h('div', null, squatBox(m.date),
@@ -1101,9 +1107,9 @@
     ];
     if (future) nodes.push(h('p', { class: 'muted' }, '這是預覽，到了那天才能記錄。'));
     var sqCard = squatCard(date);
-    if (sqCard) nodes.push(sqCard);
     if (!menu.started) {
       nodes.push(h('p', { class: 'muted' }, '訓練計畫從 ' + start + ' 開始，這天還沒開始。'));
+      if (sqCard) nodes.push(sqCard);
     } else {
       nodes.push(h('p', { class: 'muted' }, '第 ' + menu.week + ' 週・' + (future ? '這天' : '今天') + '有哪些可以做，做了就記，沒做也沒關係。'));
       if (menu.finished) nodes.push(h('p', { class: 'muted' }, '12 週計畫已走完，先沿用第 12 週的內容；想換新計畫再告訴我。'));
@@ -1115,6 +1121,7 @@
       nodes.push(h('p', { class: 'muted' }, st === '疲勞' ? '疲勞：卡片會改給輕鬆版，需要的話直接休息。' : st === '精神好' ? '精神好：有進階版的項目會多給一個選擇。' : '選今天的狀態，建議會跟著調整（可不選）。'));
       renderChallenge(date).forEach(function (n) { nodes.push(n); });
       nodes.push(h('div', { class: 'card' }, h('div', null, '本週已做 ', h('b', null, sum.sessions), ' 項、累計 ', h('b', null, sum.minutes), ' 分鐘'), h('div', { class: 'muted' }, '只是記錄，這裡沒有目標，也不影響必做完成率。')));
+      if (sqCard) nodes.push(sqCard);
       var fixed = menu.items.filter(function (i) { return i.fixed; }), core = menu.items.filter(function (i) { return !i.fixed && i.tier !== 'opt'; });
       var free = menu.items.filter(function (i) { return !i.fixed && i.tier === 'opt'; });
       function addAll(list) { list.forEach(function (i) { trainNodes(i, date, st).forEach(function (n) { nodes.push(n); }); }); }
@@ -2643,7 +2650,7 @@
         big(t.uniqueMin, ' 分', '運動時間', effortDelta(t.uniqueMin, pt.uniqueMin, 'min')),
         big(t.activeDays, ' / 7 天', '有動的日子', effortDelta(t.activeDays, pt.activeDays))),
       h('div', { class: 'muted' }, '完成的運動＝飯前後 ' + t.mealDone + ' ＋ 訓練 ' + t.trainSessions + ' ＋ 挑戰成功 ' + t.chOk + '。' +
-        (t.sameN ? '運動時間裡，有 ' + t.sameN + ' 次訓練打勾和手錶紀錄是同一次，只算一次。' : '運動時間以手錶為準，沒有手錶的訓練打勾用你填的分鐘。') + '只是記錄，沒有目標。')));
+        (t.sameN ? '運動時間裡，有 ' + t.sameN + ' 次訓練打勾和手錶紀錄是同一次，只算一次。' : '運動時間以手錶為準，沒有手錶的訓練打勾用你填的分鐘。') + '深蹲只算進「有動的日子」，不算進完成的運動項數。只是記錄，沒有目標。')));
 
     // Week strip: the bars are watch minutes, the three rows below count what else was done that day.
     var maxMin = Math.max(60, Math.max.apply(null, w.days.map(function (d) { return d.watchMin; })));
@@ -2652,18 +2659,18 @@
       var future = d.date > today(), isSel = sel === d.date;
       function cell(cls, n) { return h('span', { class: 'ef-cell ' + cls + (n ? ' on' : '') }, n ? String(n) : ''); }
       strip.appendChild(h('button', { type: 'button', class: 'ef-col' + (isSel ? ' sel' : '') + (d.date === today() ? ' now' : '') + (future ? ' future' : ''), 'aria-pressed': String(isSel),
-        'aria-label': '週' + WEEKDAY_NAMES[i] + ' ' + md(d.date) + '：手錶 ' + d.watchMin + ' 分、飯前後 ' + d.meal + '、訓練 ' + d.trainN + '、挑戰 ' + d.chOk,
+        'aria-label': '週' + WEEKDAY_NAMES[i] + ' ' + md(d.date) + '：手錶 ' + d.watchMin + ' 分、飯前後 ' + d.meal + '、訓練 ' + d.trainN + '、挑戰 ' + d.chOk + '、深蹲 ' + d.squat + ' 下',
         onclick: function () { state.effortDay = isSel ? null : d.date; render(); } },
         h('span', { class: 'ef-min' }, d.watchMin ? String(d.watchMin) : ''),
         h('span', { class: 'ef-barbox' }, h('i', { class: 'ef-bar', style: 'height:' + (d.watchMin ? Math.max(6, Math.round(d.watchMin / maxMin * 100)) : 0) + '%' })),
         h('span', { class: 'ef-wd' }, WEEKDAY_NAMES[i]),
-        cell('ef-meal', d.meal), cell('ef-train', d.trainN), cell('ef-ch', d.chOk)));
+        cell('ef-meal', d.meal), cell('ef-train', d.trainN), cell('ef-ch', d.chOk), h('span', { class: 'ef-cell ef-sq' + (d.squat ? ' on' : '') }, d.squat ? (d.squat >= 1000 ? (d.squat / 1000).toFixed(1) + 'k' : String(d.squat)) : '')));
     });
     nodes.push(foldCard('strip', '週軌跡', '', [
       h('div', { class: 'ef-strip' },
-        h('div', { class: 'ef-legend' }, h('span', { class: 'ef-watch' }, '手錶長條（分）'), h('span', { class: 'ef-meal' }, '飯前後'), h('span', { class: 'ef-train' }, '訓練'), h('span', { class: 'ef-ch' }, '挑戰')),
+        h('div', { class: 'ef-legend' }, h('span', { class: 'ef-watch' }, '手錶長條（分）'), h('span', { class: 'ef-meal' }, '飯前後'), h('span', { class: 'ef-train' }, '訓練'), h('span', { class: 'ef-ch' }, '挑戰'), h('span', { class: 'ef-sq' }, '深蹲（下）')),
         strip),
-      h('div', { class: 'muted' }, '長條是手錶記到的運動分鐘；下面三排是當天完成的項數。點一天看明細。')]));
+      h('div', { class: 'muted' }, '長條是手錶記到的運動分鐘；下面三排是當天完成的項數，最後一排是深蹲下數（本週 ' + t.squatReps + ' 下、' + t.squatDays + ' 天）。點一天看明細。')]));
 
     if (sel) nodes.push(effortDayCard(sel, w));
 
@@ -2731,6 +2738,7 @@
     });
     w.challenges.filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-ch', r.move + ' ' + r.amount, r.result); });
     w.watchRows.filter(function (r) { return r.date === date && !r.trainItem; }).forEach(function (r) { line('ef-watch', r.type, minText(r.minutes)); });
+    w.squatRows.filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-sq', '深蹲', r.reps + ' 下'); });
     if (!any) box.appendChild(h('div', { class: 'muted' }, '這天沒有運動紀錄。'));
     return box;
   }

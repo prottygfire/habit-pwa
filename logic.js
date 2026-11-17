@@ -2004,7 +2004,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
   var dates = effortDayList_(start), at = {};
   var days = dates.map(function (d, i) {
     at[d] = i;
-    return { date: d, meal: 0, trainN: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, any: false };
+    return { date: d, meal: 0, squat: 0, trainN: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, any: false };
   });
   function inWeek(d) { return d >= start && d <= end; }
 
@@ -2027,6 +2027,17 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     });
   });
   mealRows = mealRows.filter(function (r) { return r.count > 0 || r.active !== false; });
+
+  // 深蹲（常駐加分任務，次數記在打卡備註）：每天的下數進週軌跡，有記就算那天有動；不算進「完成的運動」項數
+  var squatRows = [];
+  (data.logs || []).forEach(function (l) {
+    if (!inWeek(l.date) || l.taskId !== SQUAT_TASK_ID) return;
+    var reps = squatTotal(l.note);
+    if (reps <= 0) return;
+    days[at[l.date]].squat += reps; days[at[l.date]].any = true;
+    squatRows.push({ date: l.date, reps: reps });
+  });
+  squatRows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 
   // 手錶運動 (sheet 運動) first, so a 訓練 tick can claim the watch session it came from.
   var watchRows = [];
@@ -2069,10 +2080,11 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     chList.push({ date: c.date, move: c.move, amount: c.amount, level: c.level, result: c.result, ok: ok });
   });
 
-  var t = { mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0, sameN: 0, uniqueMin: 0 };
+  var t = { squatReps: 0, squatDays: 0, mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0, sameN: 0, uniqueMin: 0 };
   days.forEach(function (d) {
     t.mealDone += d.meal; t.trainSessions += d.trainN; t.trainMin += d.trainMin; t.watchMin += d.watchMin; t.watchN += d.watchN;
     t.chOk += d.chOk; t.chTry += d.chTry; if (d.any) t.activeDays++;
+    t.squatReps += d.squat; if (d.squat) t.squatDays++;
   });
   t.sameN = watchRows.filter(function (w) { return w.trainItem; }).length;
   t.uniqueMin = t.watchMin + trainOnlyMin;   // one workout is counted once: watch minutes, plus ticks that have no watch session
@@ -2083,7 +2095,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     reps: repOrder.map(function (k) { return repMap[k]; }),
     train: trainOrder.map(function (k) { return trainMap[k]; }),
     watch: watchOrder.map(function (k) { return watchMap[k]; }).sort(function (a, b) { return b.minutes - a.minutes; }),
-    trainRows: trainRows, watchRows: watchRows, challenges: chList, totals: t
+    trainRows: trainRows, watchRows: watchRows, challenges: chList, squatRows: squatRows, totals: t
   };
 }
 

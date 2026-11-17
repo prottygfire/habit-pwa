@@ -2496,3 +2496,25 @@ function roadmapPickToday(skills) {
 function roadmapCaption(skill, gain, goal) {
   return skill + ' +' + gain + '，往' + goal + '走了一小段';
 }
+
+function roadmapFmt(x) { return x % 1 ? x.toFixed(1) : String(x); }
+
+// 點標記（kind 'marker'）或點第 n 個路標（kind 'dot'，n＝1..20＝等級）的說明文字
+function roadmapTipText(skill, sk, kind, n) {
+  if (kind === 'dot') {
+    var title = 'Lv' + n + '「' + skillTitle(skill, n) + '」';
+    return n <= sk.level ? title + '・已到達' : title + '・還差 ' + roadmapFmt(levelCum(n) - sk.sp) + ' 點';
+  }
+  var head = skill + ' Lv' + sk.level + '「' + skillTitle(skill, sk.level) + '」';
+  var gain = '今天 +' + roadmapFmt(sk.gain || 0);
+  return sk.level >= 20 ? head + '・已到頂・' + gain : head + '・還差 ' + roadmapFmt(sk.nextAt - sk.sp) + ' 點升級・' + gain;
+}
+
+// 從 from 走到 to 之間越過的路標編號（整數，不含起點、含終點）；升級動畫逐站停一下用
+function roadmapStops(from, to) {
+  var out = [];
+  for (var k = Math.floor(from) + 1; k <= Math.floor(to); k++) out.push(k);
+  return out;
+}
+
+function roadmapZoomClamp(z) { return z >= 1 ? Math.min(4, z) : 1; }

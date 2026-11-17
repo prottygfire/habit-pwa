@@ -50,10 +50,15 @@
       o.push('</g></mask></defs>');
       o.push('<rect data-fog="on" width="' + W + '" height="' + H + '" fill="' + PAPER + '" opacity="0.92" mask="url(#rmm' + uid + ')"/>');
     }
+    // 點擊範圍：每個路標一個透明大圓（霧上面也點得到）
+    for (var h2 = 0; h2 < wp.length; h2++) {
+      o.push('<circle data-hit="' + (h2 + 1) + '" cx="' + (wp[h2].x * W).toFixed(1) + '" cy="' + (wp[h2].y * H).toFixed(1) + '" r="' + (W * 0.035).toFixed(1) + '" fill="rgba(0,0,0,0)" style="pointer-events:all;cursor:pointer"/>');
+    }
     // 旅人標記（向量）
     var m = window.roadmapPoint(wp, pos), mx = m.x * W, my = m.y * H, s = W * 0.032;
-    o.push('<g class="rm-marker' + (opts.anim ? ' rm-pulse' : '') + '" transform="translate(' + mx.toFixed(1) + ' ' + my.toFixed(1) + ')">' +
+    o.push('<g class="rm-marker' + (opts.anim ? ' rm-pulse' : '') + '" style="cursor:pointer" transform="translate(' + mx.toFixed(1) + ' ' + my.toFixed(1) + ')">' +
       '<path d="M0 ' + (-s * 0.2).toFixed(1) + ' L' + s.toFixed(1) + ' ' + (s * 1.6).toFixed(1) + ' L' + (-s).toFixed(1) + ' ' + (s * 1.6).toFixed(1) + ' Z" fill="' + TERRA + '" stroke="' + INK + '" stroke-width="5"/>' +
+      '<circle cx="0" cy="0" r="' + (s * 2).toFixed(1) + '" fill="rgba(0,0,0,0)" style="pointer-events:all"/>' +
       '<circle cx="0" cy="' + (-s * 0.9).toFixed(1) + '" r="' + (s * 0.8).toFixed(1) + '" fill="' + PAPER + '" stroke="' + INK + '" stroke-width="5"/></g>');
     if (opts.debug) {
       for (var j = 0; j < wp.length; j++) o.push('<text data-debug="1" x="' + (wp[j].x * W + 16).toFixed(1) + '" y="' + (wp[j].y * H - 12).toFixed(1) + '" font-size="34" fill="#c00" stroke="#fff" stroke-width="1">' + (j + 1) + '</text>');
@@ -76,5 +81,143 @@
     return '<div class="rm-world' + (img ? '' : ' rm-nomap') + '">' + img + btns + '</div>';
   }
 
-  window.RoadmapView = { load: load, regionSvg: regionSvg, worldHtml: worldHtml };
+  // ---- 互動：點標記／路標彈說明、縮放與拖曳、升級時標記逐站走過去 ----
+
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
+
+  // box：放地圖的容器；o：{cfg, skill, sk, pos, prev, view, seen, anim, debug, onSeen}
+  // view 是會跨重畫保存的狀態 {zoom, cx, cy, tip}；seen 是上次看過的 {pos, level}（沒有就不播動畫）
+  function mountRegion(box, o) {
+    var cfg = o.cfg && o.cfg[o.skill], view = o.view, sk = o.sk;
+    if (!cfg) { box.innerHTML = regionSvg(null, 0, 0, {}); return { destroy: function () {} }; }
+    var W = cfg.w, H = cfg.h, wp = cfg.waypoints;
+    var alive = true, busy = false;
+    var tools = el('div', 'rm-tools');
+    var zoomLabel = el('span', 'muted');
+    var bOut = el('button', 'btn small', '－'), bIn = el('button', 'btn small', '＋'), bMe = el('button', 'btn small', '📍 回到旅人');
+    [bOut, bIn, bMe].forEach(function (b) { b.type = 'button'; });
+    tools.appendChild(bOut); tools.appendChild(bIn); tools.appendChild(bMe); tools.appendChild(zoomLabel);
+    var scroll = el('div', 'rm-scroll'), inner = el('div', 'rm-inner');
+    scroll.appendChild(inner);
+    box.textContent = '';
+    box.appendChild(tools); box.appendChild(scroll);
+
+    function updateLabel() { zoomLabel.textContent = '×' + view.zoom.toFixed(1); bOut.disabled = view.zoom <= 1; bIn.disabled = view.zoom >= 4; }
+    function applyZoom() { inner.style.width = (view.zoom * 100) + '%'; updateLabel(); }
+    function centerOn(fx, fy) {
+      scroll.scrollLeft = fx * scroll.scrollWidth - scroll.clientWidth / 2;
+      scroll.scrollTop = fy * scroll.scrollHeight - scroll.clientHeight / 2;
+    }
+    function saveCenter() {
+      if (!scroll.scrollWidth) return;
+      view.cx = (scroll.scrollLeft + scroll.clientWidth / 2) / scroll.scrollWidth;
+      view.cy = (scroll.scrollTop + scroll.clientHeight / 2) / scroll.scrollHeight;
+    }
+    // 縮放到 z；錨點（畫面座標）下的那一點盡量不動，沒給就以目前中心為準
+    function setZoom(z, ax, ay) {
+      z = window.roadmapZoomClamp(z);
+      var r = scroll.getBoundingClientRect();
+      var px = ax === undefined ? r.width / 2 : ax - r.left, py = ay === undefined ? r.height / 2 : ay - r.top;
+      var fx = (scroll.scrollLeft + px) / (scroll.scrollWidth || 1), fy = (scroll.scrollTop + py) / (scroll.scrollHeight || 1);
+      view.zoom = z; applyZoom();
+      scroll.scrollLeft = fx * scroll.scrollWidth - px;
+      scroll.scrollTop = fy * scroll.scrollHeight - py;
+      saveCenter();
+    }
+    function markerPoint() { return window.roadmapPoint(wp, o.pos); }
+
+    function tipPoint() {
+      if (!view.tip) return null;
+      return view.tip.kind === 'dot' ? wp[view.tip.n - 1] : markerPoint();
+    }
+    function drawTip() {
+      var old = inner.querySelector('.rm-tip');
+      if (old) old.remove();
+      var pt = tipPoint();
+      if (!pt) return;
+      var t = el('div', 'rm-tip' + (pt.y < 0.14 ? ' below' : ''), window.roadmapTipText(o.skill, sk, view.tip.kind, view.tip.n));
+      t.style.left = Math.max(22, Math.min(78, pt.x * 100)).toFixed(1) + '%';
+      t.style.top = (pt.y * 100).toFixed(1) + '%';
+      inner.appendChild(t);
+    }
+    function draw(pos, level, prev) {
+      var keep = scroll.scrollLeft, keepY = scroll.scrollTop;
+      inner.innerHTML = regionSvg(cfg, pos, prev, { anim: o.anim, debug: o.debug, level: level, uid: 'r' });
+      scroll.scrollLeft = keep; scroll.scrollTop = keepY;
+      drawTip();
+    }
+
+    inner.addEventListener('click', function (e) {
+      if (busy) return;
+      var t = e.target, kind = null, n = 0;
+      if (t.closest && t.closest('.rm-marker')) kind = 'marker';
+      else if (t.getAttribute && t.getAttribute('data-hit')) { kind = 'dot'; n = +t.getAttribute('data-hit'); }
+      if (!kind || (view.tip && view.tip.kind === kind && view.tip.n === n)) view.tip = null;
+      else view.tip = { kind: kind, n: n };
+      drawTip();
+    });
+    bIn.addEventListener('click', function () { setZoom(view.zoom * 1.5); });
+    bOut.addEventListener('click', function () { setZoom(view.zoom / 1.5); });
+    bMe.addEventListener('click', function () { var m = markerPoint(); centerOn(m.x, m.y); saveCenter(); });
+    scroll.addEventListener('scroll', saveCenter);
+    // 兩指縮放（CSS touch-action 已擋掉瀏覽器自己的縮放）
+    var pinch = null;
+    function dist(ts) { return Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY); }
+    scroll.addEventListener('touchstart', function (e) { if (e.touches.length === 2) pinch = { d: dist(e.touches), z: view.zoom }; });
+    scroll.addEventListener('touchmove', function (e) {
+      if (!pinch || e.touches.length !== 2) return;
+      setZoom(pinch.z * dist(e.touches) / pinch.d, (e.touches[0].clientX + e.touches[1].clientX) / 2, (e.touches[0].clientY + e.touches[1].clientY) / 2);
+    });
+    scroll.addEventListener('touchend', function (e) { if (e.touches.length < 2) pinch = null; });
+
+    applyZoom();
+    var willPlay = !!(o.anim && o.seen && o.seen.level < sk.level && window.roadmapStops(o.seen.pos, o.pos).length);
+    if (willPlay) draw(o.seen.pos, o.seen.level, o.seen.pos); else draw(o.pos, sk.level, o.prev);
+    // 放大時：有存過視野就回到那裡，第一次則對準旅人
+    if (view.zoom > 1) {
+      if (view.cx === undefined) { var m0 = markerPoint(); view.cx = m0.x; view.cy = m0.y; }
+      centerOn(view.cx, view.cy);
+    }
+    if (o.onSeen) o.onSeen();
+
+    // 升級：標記沿路走，經過每個新路標停一下、路標亮起、霧退開
+    function playLevelUp() {
+      var stops = window.roadmapStops(o.seen.pos, o.pos), fast = stops.length > 6, cur = o.seen.pos;
+      var moveMs = fast ? 250 : 700, pauseMs = fast ? 250 : 800;
+      busy = true;
+      function stillHere() { return alive && box.isConnected; }
+      function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+      function move(to) {
+        return new Promise(function (resolve) {
+          var from = cur, t0 = null;
+          function frame(ts) {
+            if (!stillHere()) return resolve();
+            if (t0 === null) t0 = ts;
+            var k = Math.min(1, (ts - t0) / moveMs), p = window.roadmapPoint(wp, from + (to - from) * k);
+            var mk = inner.querySelector('.rm-marker');
+            if (mk) mk.setAttribute('transform', 'translate(' + (p.x * W).toFixed(1) + ' ' + (p.y * H).toFixed(1) + ')');
+            if (k < 1) setTimeout(function () { frame(performance.now()); }, 16); else { cur = to; resolve(); }
+          }
+          frame(performance.now());
+        });
+      }
+      var chain = Promise.resolve();
+      stops.forEach(function (k) {
+        chain = chain.then(function () { if (!stillHere()) return; return move(k); }).then(function () {
+          if (!stillHere()) return;
+          draw(k, k + 1, k);
+          var dot = inner.querySelector('[data-dot="' + (k + 1) + '"]');
+          if (dot) dot.setAttribute('class', 'rm-dot lit rm-pop');
+          return wait(pauseMs);
+        });
+      });
+      chain.then(function () { if (!stillHere()) return; return move(o.pos); }).then(function () {
+        if (stillHere()) draw(o.pos, sk.level, o.prev);
+      }).then(function () { busy = false; }, function () { busy = false; });
+    }
+    if (willPlay) setTimeout(function () { if (alive && box.isConnected) playLevelUp(); }, 400);
+    return { destroy: function () { alive = false; } };
+  }
+
+  window.RoadmapView = { load: load, regionSvg: regionSvg, worldHtml: worldHtml, mountRegion: mountRegion };
 })();

@@ -293,3 +293,13 @@ td.auto { font-weight: 600; }
 .rm-glow { animation: rm-glow 1.8s ease-in-out infinite; }
 @keyframes rm-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 @keyframes rm-glow { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+.rm-tools { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.rm-tools .muted { margin-left: auto; }
+.rm-scroll { aspect-ratio: 2 / 3; overflow: auto; border-radius: 12px; border: 1px solid var(--line); background: #E8D9B0; touch-action: pan-x pan-y; overscroll-behavior: contain; }
+.rm-inner { position: relative; width: 100%; }
+.rm-inner .rm-svg { border: none; border-radius: 0; }
+.rm-tip { position: absolute; transform: translate(-50%, -135%); background: rgba(59, 42, 26, .95); color: #F5EBCF; padding: 6px 10px; border-radius: 10px; font-size: .85rem; white-space: nowrap; pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+.rm-tip.below { transform: translate(-50%, 60%); }
+.rm-pop { animation: rm-pop .8s ease-out; transform-box: fill-box; transform-origin: center; }
+@keyframes rm-pop { 0% { transform: scale(1); } 40% { transform: scale(2.2); } 100% { transform: scale(1); } }

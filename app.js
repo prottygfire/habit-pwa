@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v33';
+  var VERSION = '2026-11-17 v34';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -2115,8 +2115,15 @@
     nodes.push(h('div', { class: 'card' },
       h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'),
       h('div', { class: 'muted' }, sk.level >= 20 ? '已走到終點，霧全散了。' : '還差 ' + fmtPts(sk.toNext) + ' 點升級・今天 +' + fmtPts(sk.gain))));
+    // 縮放、彈窗狀態跨重畫保存；換區域就重來。上次看過的位置存在手機上，等級變高時播「走過去」動畫
+    if (!state.mapView || state.mapView.skill !== s) state.mapView = { skill: s, zoom: 1, tip: null };
+    var seenAll = LS.get('habit.mapSeen', {}) || {}, seen = seenAll[s] || null;
     var svgBox = h('div');
-    svgBox.innerHTML = RoadmapView.regionSvg(cfg && cfg[s], p.pos, p.prev, { anim: PREFS.anim, debug: /mapdebug/.test(location.search), level: sk.level, uid: 'r' });
+    if (state.mapMount) state.mapMount.destroy();
+    state.mapMount = RoadmapView.mountRegion(svgBox, {
+      cfg: cfg, skill: s, sk: sk, pos: p.pos, prev: p.prev, view: state.mapView, seen: seen, anim: PREFS.anim, debug: /mapdebug/.test(location.search),
+      onSeen: function () { seenAll[s] = { pos: p.pos, level: sk.level }; LS.set('habit.mapSeen', seenAll); }
+    });
     nodes.push(svgBox);
     return nodes;
   }

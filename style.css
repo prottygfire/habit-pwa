@@ -303,3 +303,7 @@ td.auto { font-weight: 600; }
 .rm-tip.below { transform: translate(-50%, 60%); }
 .rm-pop { animation: rm-pop .8s ease-out; transform-box: fill-box; transform-origin: center; }
 @keyframes rm-pop { 0% { transform: scale(1); } 40% { transform: scale(2.2); } 100% { transform: scale(1); } }
+
+.squat .squat-btns { gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.squat .squat-n { font-size: 1.6rem; }
+.squat .squat-in { width: 6.5em; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }

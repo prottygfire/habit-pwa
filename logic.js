@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js and roadmap.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js, roadmap.js, nav.js and squat.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -245,7 +245,7 @@ function bonusStats(tasks, date, idx) {
   var due = 0, done = 0;
   for (var i = 0; i < tasks.length; i++) {
     var t = tasks[i];
-    if (!isBonus(t) || isCounterTask(t) || isAccumFreq(t.freq) || !isScheduled(t, date)) continue;
+    if (!isBonus(t) || isCounterTask(t) || isFreeBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, date)) continue;
     due++;
     if (isDone(t, date, idx)) done++;
   }
@@ -986,7 +986,7 @@ function computeGame(data, today) {
     if (perfect) {
       var bonusDue = 0, bonusDone = 0;
       tasks.forEach(function (t) {
-        if (!isBonus(t) || isCounterTask(t) || isAccumFreq(t.freq) || !isScheduled(t, d)) return;
+        if (!isBonus(t) || isCounterTask(t) || isFreeBonus(t) || isAccumFreq(t.freq) || !isScheduled(t, d)) return;
         bonusDue++;
         if (isDone(t, d, idx)) bonusDone++;
       });
@@ -2506,9 +2506,14 @@ function roadmapTipText(skill, sk, kind, n) {
     return n <= sk.level ? title + '・已到達' : title + '・還差 ' + roadmapFmt(levelCum(n) - sk.sp) + ' 點';
   }
   var head = skill + ' Lv' + sk.level + '「' + skillTitle(skill, sk.level) + '」';
-  var gain = '今天 +' + roadmapFmt(sk.gain || 0);
-  return sk.level >= 20 ? head + '・已到頂・' + gain : head + '・還差 ' + roadmapFmt(sk.nextAt - sk.sp) + ' 點升級・' + gain;
+  var gain = '今天 +' + roadmapFmt(sk.gain || 0), left = roadmapFmt(sk.nextAt - sk.sp);
+  if (sk.level < 20) return head + '・還差 ' + left + ' 點升級・' + gain;
+  var stars = roadmapStars(sk);
+  return head + '・已到頂' + (stars ? '・精通 +' + stars + ' 級' : '') + '・還差 ' + left + ' 點再升一級・' + gain;
 }
+
+// 到頂（Lv20）之後每多一級就多一顆精通星
+function roadmapStars(sk) { return Math.max(0, sk.level - 20); }
 
 // 從 from 走到 to 之間越過的路標編號（整數，不含起點、含終點）；升級動畫逐站停一下用
 function roadmapStops(from, to) {
@@ -2518,3 +2523,46 @@ function roadmapStops(from, to) {
 }
 
 function roadmapZoomClamp(z) { return z >= 1 ? Math.min(4, z) : 1; }
+
+// 手機返回鍵：App 內每個「頁」和「彈窗層」對應一筆瀏覽器歷史紀錄。純函式，不碰 window／document。
+// prev／cur ＝ {page: 'tab|region', layer: ''|'modal'|'edit'}；回傳要對歷史紀錄做的動作（依序）：
+//   pushPage 換頁並新增一筆；replacePage 換頁但取代目前那筆（彈窗開著時換頁，不留彈窗那一層）；
+//   pushLayer 開彈窗／編輯畫面時新增一筆；replaceLayer 彈窗換成編輯畫面；back 關閉彈窗時退回上一筆。
+function navStep(prev, cur) {
+  if (prev.page === cur.page) {
+    if (prev.layer === cur.layer) return [];
+    if (!prev.layer) return ['pushLayer'];
+    return cur.layer ? ['replaceLayer'] : ['back'];
+  }
+  var ops = [prev.layer ? 'replacePage' : 'pushPage'];
+  if (cur.layer) ops.push('pushLayer');
+  return ops;
+}
+
+// 常駐的「深蹲」加分任務：隨時記次數，不強迫。次數存在打卡紀錄的備註，格式「深蹲*60」（和飯前飯後的深蹲選項同格式，月／季頁的動作統計會一起加總）。
+// 它是一個一般的加分任務（試算表「任務」分頁一列，類別＝加分、技能＝體能），所以有記錄就給技能點；
+// 但每天都有、不是目標，所以不算進「還有 N 項加分」與加分完成數（isFreeBonus）。
+
+var SQUAT_TASK_ID = 'tsq5a0001';
+var SQUAT_NAME = '深蹲';
+
+function isFreeBonus(task) { return !!task && task.id === SQUAT_TASK_ID; }
+
+// 備註裡深蹲的總次數（備註可能還有別的項目，只算「深蹲」）
+function squatTotal(note) {
+  var sum = 0;
+  parseNote(note).forEach(function (p) { if (p.base === SQUAT_NAME) sum += p.count; });
+  return sum;
+}
+
+function squatNote(total) { return total > 0 ? noteItem(SQUAT_NAME, total) : ''; }
+
+// 在目前的備註上加（或扣）delta 下；扣到 0 以下回空字串（呼叫端據此取消當天的打卡）
+function squatAdd(note, delta) { return squatNote(Math.max(0, squatTotal(note) + delta)); }
+
+// date 那一週（週一到週日）所有深蹲紀錄的總次數
+function squatWeekSum(logs, date) {
+  var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), sum = 0;
+  logs.forEach(function (l) { if (l.taskId === SQUAT_TASK_ID && l.date >= start && l.date <= end) sum += squatTotal(l.note); });
+  return sum;
+}

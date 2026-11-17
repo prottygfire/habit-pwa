@@ -50,6 +50,13 @@
       o.push('</g></mask></defs>');
       o.push('<rect data-fog="on" width="' + W + '" height="' + H + '" fill="' + PAPER + '" opacity="0.92" mask="url(#rmm' + uid + ')"/>');
     }
+    // 精通星：Lv20 之後每多一級一顆，排在終點地標上方（最多畫 10 顆，超過的看彈窗）
+    var nStars = Math.min(10, window.roadmapStars({ level: level }));
+    for (var si = 0; si < nStars; si++) {
+      var sx = cfg.landmark.x * W + (si - (nStars - 1) / 2) * W * 0.04, sy = cfg.landmark.y * H - R * 0.95, sr = W * 0.017, spts = [];
+      for (var q = 0; q < 10; q++) { var ang = -Math.PI / 2 + q * Math.PI / 5, rr = q % 2 ? sr * 0.45 : sr; spts.push((sx + Math.cos(ang) * rr).toFixed(1) + ',' + (sy + Math.sin(ang) * rr).toFixed(1)); }
+      o.push('<polygon data-star="' + (si + 1) + '" points="' + spts.join(' ') + '" fill="' + GOLD + '" stroke="' + INK + '" stroke-width="3" stroke-linejoin="round"/>');
+    }
     // 點擊範圍：每個路標一個透明大圓（霧上面也點得到）
     for (var h2 = 0; h2 < wp.length; h2++) {
       o.push('<circle data-hit="' + (h2 + 1) + '" cx="' + (wp[h2].x * W).toFixed(1) + '" cy="' + (wp[h2].y * H).toFixed(1) + '" r="' + (W * 0.035).toFixed(1) + '" fill="rgba(0,0,0,0)" style="pointer-events:all;cursor:pointer"/>');
@@ -75,7 +82,7 @@
       var pct = Math.round(window.roadmapPos(sk) / 19 * 100);
       var e = cfg && cfg.world && cfg.world.entries && cfg.world.entries[s];
       var style = e ? ' style="left:' + (e.x * 100).toFixed(1) + '%;top:' + (e.y * 100).toFixed(1) + '%"' : '';
-      return '<button class="rm-entry' + (e ? ' placed' : '') + '" data-skill="' + s + '"' + style + '><b>' + s + '</b><span>Lv' + sk.level + '</span><i class="rm-bar"><u style="width:' + pct + '%"></u></i></button>';
+      return '<button class="rm-entry' + (e ? ' placed' : '') + '" data-skill="' + s + '"' + style + '><b>' + s + '</b><span>Lv' + sk.level + (sk.level > 20 ? ' ★' + (sk.level - 20) : '') + '</span><i class="rm-bar"><u style="width:' + pct + '%"></u></i></button>';
     }).join('');
     var img = cfg && cfg.world ? '<img class="rm-worldimg" src="map/' + cfg.world.image + '" alt="世界地圖" onerror="this.parentNode.classList.add(\'rm-nomap\');this.remove()">' : '';
     return '<div class="rm-world' + (img ? '' : ' rm-nomap') + '">' + img + btns + '</div>';

@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v34';
+  var VERSION = '2026-11-17 v36';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -417,6 +417,54 @@
   var TASK_ID = { run: 't3fa08612', strength: 'tb7a1c4e0', hiit: 'tc2d9f5a3' };
   function taskById(id) { return state.data.tasks.filter(function (t) { return t.id === id && t.active; })[0]; }
   function runTask() { return taskById(TASK_ID.run); }
+  // ---- 深蹲（常駐加分）：訓練頁卡片與今日頁彈窗共用同一組按鈕 ----
+  function squatTask() { return taskById(SQUAT_TASK_ID); }
+  function setSquat(date, total) {
+    var t = squatTask();
+    if (!t) return;
+    if (total <= 0) { if (isDone(t, date, ctx().idx)) uncheckTask(t, date); return; }
+    checkTask(t, date, '標準', squatNote(total));
+  }
+  function squatBox(date) {
+    var t = squatTask(), box = h('div', { class: 'squat' });
+    function now() { return squatTotal(noteOn(t, date, ctx().idx)); }
+    function bump(delta) {
+      var n = Math.max(0, now() + delta);
+      if (n === now()) return;
+      setSquat(date, n); paint();
+    }
+    function paint() {
+      box.textContent = '';
+      var cur = now();
+      box.appendChild(h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'name' }, '🦵 深蹲'), h('div', { class: 'muted' }, '加分・隨時記，沒有目標、不催')),
+        h('div', null, h('b', { class: 'squat-n' }, cur), ' 下')));
+      box.appendChild(h('div', { class: 'muted' }, (date === today() ? '今天' : dateTitle(date)) + ' ' + cur + ' 下・本週 ' + squatWeekSum(state.data.logs, date) + ' 下'));
+      var btns = h('div', { class: 'row squat-btns' });
+      [10, 20, 30].forEach(function (n) { btns.appendChild(h('button', { class: 'btn small', type: 'button', onclick: function () { bump(n); } }, '+' + n)); });
+      btns.appendChild(h('button', { class: 'btn small', type: 'button', disabled: cur <= 0, onclick: function () { bump(-10); } }, '−10'));
+      box.appendChild(btns);
+      var input = h('input', { type: 'number', min: '1', max: '1000', step: '1', inputmode: 'numeric', placeholder: '自訂', 'aria-label': '自訂深蹲次數', class: 'squat-in' });
+      box.appendChild(h('form', { class: 'row squat-btns', onsubmit: function (ev) {
+        ev.preventDefault();
+        var v = parseInt(input.value, 10);
+        if (!(v >= 1 && v <= 1000)) { toast('次數要在 1 到 1000 之間'); return; }
+        bump(v);
+      } }, input, h('button', { class: 'btn small', type: 'submit' }, '加入')));
+    }
+    paint();
+    return box;
+  }
+  function squatCard(date) {
+    if (!squatTask() || date > today()) return null;
+    return h('div', { class: 'card' }, squatBox(date));
+  }
+  function squatModal(m) {
+    return modalShell('深蹲', h('div', null, squatBox(m.date),
+      h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'btn primary grow', type: 'button', onclick: closeModal }, '完成'))));
+  }
+
+
   function tickById(id, date, note) {
     var t = taskById(id);
     if (t && !isDone(t, date, ctx().idx)) checkTask(t, date, '標準', note || '');
@@ -659,6 +707,7 @@
   }
 
   function renderModal() {
+    navSync(); // 彈窗常被直接開關（不經 render），這裡也要同步手機返回鍵的歷史
     var host = document.getElementById('modal');
     if (!state.modal || !state.data) { host.textContent = ''; host.dataset.key = ''; return; }
     var m = state.modal, key = m.type + '|' + m.task.id + '|' + m.date;
@@ -666,7 +715,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'catchup' ? catchupModal() : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : minutesModal(m, c));
+    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'catchup' ? catchupModal() : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : m.type === 'squat' ? squatModal(m) : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -689,7 +738,8 @@
     if (total > 0) sub.push(h('span', { class: 'muted' }, (ms.got ? ms.got + ' ' : '') + '累計 ' + total + ' 次' + (ms.next ? '・再 ' + (ms.next - total) + ' 次到 ' + ms.next : '')));
     var cue = cuesOf()[t.id];
     var tap = function () {
-      if (isCounterTask(t)) { state.modal = { type: 'counter', task: t, date: date }; renderModal(); }
+      if (t.id === SQUAT_TASK_ID) { state.modal = { type: 'squat', task: t, date: date }; renderModal(); }
+      else if (isCounterTask(t)) { state.modal = { type: 'counter', task: t, date: date }; renderModal(); }
       else if (hasOptions(t)) { state.modal = { type: 'options', task: t, date: date }; renderModal(); }
       else if (done) uncheckTask(t, date);
       else if (ledgerKindOf(t) === 'diary') openLedger('diary', date);   // an entry of at least DIARY_MIN_CHARS characters is what ticks it
@@ -703,7 +753,7 @@
         h('div', null, sub),
         cue ? h('div', { class: 'muted' }, '📍 ' + cue) : null,
         done && note ? h('div', { class: 'muted' }, note) : null,
-        !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : null),
+        !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : (t.id === SQUAT_TASK_ID && !done ? h('div', { class: 'muted' }, '點勾記次數，隨時都能記') : null)),
       ex ? h('button', { class: 'btn small', 'aria-label': '取消免責 ' + t.name, onclick: function () { unexemptTask(t, date); } }, '取消免責') : null,
       canExempt(t, date, c) ? h('button', { class: 'btn small', 'aria-label': '用免責券抵免 ' + t.name, onclick: function () { exemptTask(t, date); } }, '🎫') : null,
       tiered ? h('button', { class: 'btn small', 'aria-label': t.name + ' 選擇進階或最低', onclick: function () { state.modal = { type: 'tier', task: t, date: date }; renderModal(); } }, '⋯') : null,
@@ -1050,6 +1100,8 @@
           h('button', { class: 'btn small', 'aria-label': '後一天', disabled: daysBetween(today(), date) >= 14, onclick: function () { state.trainDate = addDays(date, 1); render(); } }, '›')))
     ];
     if (future) nodes.push(h('p', { class: 'muted' }, '這是預覽，到了那天才能記錄。'));
+    var sqCard = squatCard(date);
+    if (sqCard) nodes.push(sqCard);
     if (!menu.started) {
       nodes.push(h('p', { class: 'muted' }, '訓練計畫從 ' + start + ' 開始，這天還沒開始。'));
     } else {
@@ -1436,7 +1488,7 @@
   // Sub pages get a way back to 更多.
   function withBack(tab, nodes) {
     if (SUB_PAGES.indexOf(tab) < 0 || !state.cfg) return nodes;
-    return [h('button', { class: 'btn small', onclick: function () { goTab('more'); } }, '‹ 更多')].concat(nodes);
+    return [h('button', { class: 'btn small', onclick: function () { navBack('more', ''); } }, '‹ 更多')].concat(nodes);
   }
 
   // ---- 記錄: 記帳, 餐費, 日記 ----
@@ -2111,10 +2163,10 @@
       return nodes;
     }
     var sk = g.skills[s], p = skillPos(sk);
-    nodes.push(h('button', { class: 'btn small', onclick: function () { state.mapRegion = null; render(); } }, '‹ 世界地圖'));
+    nodes.push(h('button', { class: 'btn small', onclick: function () { navBack('map', ''); } }, '‹ 世界地圖'));
     nodes.push(h('div', { class: 'card' },
       h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'),
-      h('div', { class: 'muted' }, sk.level >= 20 ? '已走到終點，霧全散了。' : '還差 ' + fmtPts(sk.toNext) + ' 點升級・今天 +' + fmtPts(sk.gain))));
+      h('div', { class: 'muted' }, sk.level >= 20 ? '已走到終點，霧全散了。' + (sk.level > 20 ? '精通 ★' + (sk.level - 20) + '，' : '') + '還差 ' + fmtPts(sk.toNext) + ' 點再升一級・今天 +' + fmtPts(sk.gain) : '還差 ' + fmtPts(sk.toNext) + ' 點升級・今天 +' + fmtPts(sk.gain))));
     // 縮放、彈窗狀態跨重畫保存；換區域就重來。上次看過的位置存在手機上，等級變高時播「走過去」動畫
     if (!state.mapView || state.mapView.skill !== s) state.mapView = { skill: s, zoom: 1, tip: null };
     var seenAll = LS.get('habit.mapSeen', {}) || {}, seen = seenAll[s] || null;
@@ -2685,6 +2737,46 @@
 
   // ---- shell ----
 
+  // ---- 手機返回鍵：頁面與彈窗各對應一筆瀏覽器歷史（動作判斷在 shared/nav.js 的 navStep） ----
+  var navPrev = null, navIgnore = 0;
+  function navCur() {
+    var tab = state.cfg ? state.tab : 'settings';
+    return { page: tab + '|' + (tab === 'map' && state.mapRegion ? state.mapRegion : ''), layer: state.modal ? 'modal' : state.editing ? 'edit' : '' };
+  }
+  function navEntry(cur, under, layer) { var parts = cur.page.split('|'); return { tab: parts[0], region: parts[1] || '', under: under || '', layer: layer || '' }; }
+  function navSync() {
+    var cur = navCur();
+    if (!window.history || !history.pushState) return;
+    if (!navPrev) { navPrev = cur; history.replaceState(navEntry(cur, '', ''), ''); return; }
+    var under = navPrev.page, h0 = history.state || {};
+    navStep(navPrev, cur).forEach(function (op) {
+      if (op === 'pushPage') history.pushState(navEntry(cur, under, ''), '');
+      else if (op === 'replacePage') history.replaceState(navEntry(cur, h0.under || '', ''), '');
+      else if (op === 'pushLayer') history.pushState(navEntry(cur, h0.under || '', cur.layer), '');
+      else if (op === 'replaceLayer') history.replaceState(navEntry(cur, h0.under || '', cur.layer), '');
+      else if (op === 'back') { navIgnore++; history.back(); }
+    });
+    navPrev = cur;
+  }
+  // App 內的「‹ 返回」：上一筆歷史就是目標頁時直接退回去（和手機返回鍵一樣），否則照一般換頁
+  function navBack(tab, region) {
+    var target = tab + '|' + (region || ''), hs = history.state || {};
+    if (hs.under === target && !hs.layer) { history.back(); return; }
+    state.tab = tab; state.mapRegion = region || null; state.editing = null; state.modal = null;
+    if (tab === 'ledger') loadLedger();
+    render(); window.scrollTo(0, 0);
+  }
+  window.addEventListener('popstate', function (e) {
+    if (navIgnore > 0) { navIgnore--; return; }
+    var s = e.state;
+    if (!s || !s.tab) return;
+    state.tab = s.tab; state.mapRegion = s.region || null; state.editing = null; state.modal = null;
+    navPrev = { page: s.tab + '|' + (s.region || ''), layer: '' };
+    if (s.tab === 'ledger') loadLedger();
+    if (s.tab === 'dreams') loadDreams();
+    render(); window.scrollTo(0, 0);
+  });
+
   function render() {
     var view = document.getElementById('view');
     var tab = state.cfg ? state.tab : 'settings';
@@ -2702,6 +2794,7 @@
       b.disabled = !state.cfg;
     });
     renderModal();
+    navSync();
     if (state.pop) { if (state.pop.confetti) confetti(); if (PREFS.anim) buzz(); beep(); state.pop = null; }
   }
 

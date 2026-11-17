@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v29';
+  var VERSION = '2026-11-17 v30';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -413,8 +413,22 @@
   function trainPlan(date) { return trainingWeekPlan(date, trainStart(), trainRowsAll(), dget('workouts'), today(), zoneForPlan()); }
   function trainOn(id, date) { return trainRows().filter(function (r) { return r.item === id && r.date === date; })[0]; }
   function trainStateOn(date) { var r = trainOn('_state', date); return r ? r.version : ''; }
-  function runTask() {
-    return state.data.tasks.filter(function (t) { return t.active && t.freq === 'weekly_min' && t.name.indexOf('跑') >= 0; })[0];
+  // The habit tasks this tab feeds, by id (the same ids Health.gs uses), so renaming a task never breaks the link.
+  var TASK_ID = { run: 't3fa08612', strength: 'tb7a1c4e0', hiit: 'tc2d9f5a3' };
+  function taskById(id) { return state.data.tasks.filter(function (t) { return t.id === id && t.active; })[0]; }
+  function runTask() { return taskById(TASK_ID.run); }
+  function tickById(id, date, note) {
+    var t = taskById(id);
+    if (t && !isDone(t, date, ctx().idx)) checkTask(t, date, '標準', note || '');
+  }
+  // The watch sync (Health.gs) is what writes the weekly Zone 2 minutes. Typing minutes in here is only the fallback for a day the watch has no Zone 2 session
+  // (you forgot to wear it), so it can never overwrite or clear minutes the watch wrote.
+  function watchCardioOn(date) {
+    return trainingActivities(date, [], dget('workouts'), zoneForPlan()).some(function (a) { return a.date === date && a.source === 'watch' && a.kind === 'cardio' && !a.off; });
+  }
+  function runMinutesOn(rt, date) {
+    var l = dget('logs').filter(function (x) { return x.date === date && x.taskId === rt.id; })[0];
+    return l ? Number(l.minutes) || 0 : 0;
   }
 
   function setTrainLocal(id, date, row) {
@@ -427,16 +441,17 @@
     setTrainLocal(item.id, date, { minutes: minutes, rpe: rpe, version: version, note: note });
     enqueue('trainSet', { date: date, item: item.id, done: true, minutes: minutes, rpe: rpe, version: version, note: note });
     var rt = runTask();
-    if (item.isRun && rt && minutes > 0) saveMinutes(rt, date, minutes);
-    if (item.kind === 'strength') tickByName(/重量訓練/, date, '健身房');
-    if (item.kind === 'interval') tickByName(/間歇/, date, '');
+    if (item.isRun && rt && minutes > 0 && !watchCardioOn(date)) saveMinutes(rt, date, minutes);
+    if (item.kind === 'strength') tickById(TASK_ID.strength, date, '健身房');
+    if (item.kind === 'interval') tickById(TASK_ID.hiit, date, '');
   }
 
   function trainUndo(item, date) {
+    var prev = trainOn(item.id, date), rt = runTask();
     setTrainLocal(item.id, date, null);
     enqueue('trainSet', { date: date, item: item.id, done: false });
-    var rt = runTask();
-    if (item.isRun && rt) saveMinutes(rt, date, 0);
+    // only take back minutes this tick itself wrote (never the watch's)
+    if (item.isRun && rt && prev && !watchCardioOn(date) && runMinutesOn(rt, date) === (Number(prev.minutes) || 0)) saveMinutes(rt, date, 0);
   }
 
   function vacOn(date) { var r = trainOn('_mode', date); return !!r && r.version === '休假'; }
@@ -975,7 +990,8 @@
             var on = !a.off;
             setTrainLocal(key, a.date, on ? { version: '不抵' } : null);
             enqueue('trainSet', { date: a.date, item: key, done: on, version: on ? '不抵' : '' });
-          } }, a.off ? '恢復' : '不抵') : a.source === 'manual' ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除這筆「' + a.label + '」？')) removeManualTrain(a); } }, '刪除') : null);
+          } }, a.off ? '恢復' : '不抵') : a.source === 'manual' ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除這筆「' + a.label + '」？')) removeManualTrain(a); } }, '刪除') : null,
+          a.manualItem && canOff ? h('button', { class: 'btn small danger', onclick: function () { if (confirm('刪除你手動記的那一筆？手錶那筆會留下。')) removeManualTrain({ item: a.manualItem, date: a.date }); } }, '刪手動') : null);
       }),
       !hrKnown() && dget('workouts').length ? h('div', { class: 'variant' }, '目前取不到手錶的平均心率（後端 Store.gs 還沒更新），所以走路先全部照分鐘算；更新後只算心率在 Zone 2 區間的走路。') : null,
       h('div', { class: 'muted' }, '有氧：跑步等不看心率；手錶走路要單次 10 分鐘以上、平均心率在 Zone 2（預設 113～132）才算，更短或太悠閒的走路不會列在這裡。同一天同類型的手錶運動一起處理。'));
@@ -986,10 +1002,7 @@
     var prev = trainOn(a.item, a.date), rt = runTask();
     setTrainLocal(a.item, a.date, null);
     enqueue('trainSet', { date: a.date, item: a.item, done: false });
-    if (a.item === 'x-cardio' && rt) {
-      var l = dget('logs').filter(function (x) { return x.date === a.date && x.taskId === rt.id; })[0];
-      saveMinutes(rt, a.date, Math.max(0, (l ? l.minutes || 0 : 0) - (prev ? prev.minutes || 0 : 0)));
-    }
+    if (a.item === 'x-cardio' && rt && prev && !watchCardioOn(a.date)) saveMinutes(rt, a.date, Math.max(0, runMinutesOn(rt, a.date) - (Number(prev.minutes) || 0)));
   }
 
   function manualTrainModal(m) {
@@ -1003,12 +1016,9 @@
       closeModal();
       setTrainLocal(item, date, { minutes: mins, version: '手動' });
       enqueue('trainSet', { date: date, item: item, done: true, minutes: mins, rpe: 0, version: '手動', note: '' });
-      if (item === 'x-cardio' && rt) {
-        var l = dget('logs').filter(function (x) { return x.date === date && x.taskId === rt.id; })[0];
-        saveMinutes(rt, date, Math.max(0, (l ? l.minutes || 0 : 0) - (prev ? prev.minutes || 0 : 0) + mins));
-      }
-      if (item === 'x-strength') tickByName(/重量訓練/, date, '手動');
-      if (item === 'x-interval') tickByName(/間歇/, date, '手動');
+      if (item === 'x-cardio' && rt && !watchCardioOn(date)) saveMinutes(rt, date, Math.max(0, runMinutesOn(rt, date) - (prev ? Number(prev.minutes) || 0 : 0) + mins));
+      if (item === 'x-strength') tickById(TASK_ID.strength, date, '手動');
+      if (item === 'x-interval') tickById(TASK_ID.hiit, date, '手動');
     } },
       h('p', { class: 'muted' }, '做了計畫以外的、或換天做的，在這裡補記，會自動抵掉這週對應的項目。同一天同類型只留一筆，要加總請填合計分鐘。'),
       h('label', { class: 'f', for: 'mt-date' }, '哪一天'),
@@ -1342,7 +1352,7 @@
     if (entry.reps.length) state.data.strength.push(entry);
     enqueue('strength', { entry: entry });
     // A logged session is also the day's 重量訓練 check-in.
-    if (entry.reps.length) tickByName(/重量訓練/, entry.date, strengthDayOn(entry.date) + ' 日');
+    if (entry.reps.length) tickById(TASK_ID.strength, entry.date, strengthDayOn(entry.date) + ' 日');
   }
 
   // ---- 三大目標與月回顧 (in the 月/季 tab) ----

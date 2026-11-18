@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js, roadmap.js, nav.js, squat.js and sync.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js, roadmap.js, nav.js, squat.js, sync.js and usage.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -2649,4 +2649,32 @@ function syncBannerText(queued, lastOkLabel, err) {
   var ok = lastOkLabel ? '最後成功 ' + lastOkLabel : '還沒成功同步過';
   if (queued > 0) return '⚠ ' + queued + ' 筆還沒同步' + (err ? '（' + err + '）' : '') + '・' + ok;
   return '⚠ ' + err + '・顯示的是上次的資料（' + ok + '）';
+}
+
+// 頁面使用次數（只存在手機本機，不上傳）：{ '日期': { 頁面代號: 開了幾次 } }。純函式。
+
+// 在 date 這天給 key 加一次；超過 keepDays 天的舊日期順便清掉。回傳新物件，不改原本的。
+function usageBump(map, date, key, keepDays) {
+  var out = {};
+  Object.keys(map || {}).forEach(function (d) {
+    if (daysBetween(d, date) > keepDays) return;
+    out[d] = {};
+    Object.keys(map[d]).forEach(function (k) { out[d][k] = map[d][k]; });
+  });
+  if (!out[date]) out[date] = {};
+  out[date][key] = (out[date][key] || 0) + 1;
+  return out;
+}
+
+// 近 days 天各頁的 {key, opens（開了幾次）, days（用了幾天）}，依次數由多到少
+function usageSummary(map, today, days) {
+  var acc = {};
+  Object.keys(map || {}).forEach(function (d) {
+    if (daysBetween(d, today) > days) return;
+    Object.keys(map[d]).forEach(function (k) {
+      if (!acc[k]) acc[k] = { key: k, opens: 0, days: 0 };
+      acc[k].opens += map[d][k]; acc[k].days++;
+    });
+  });
+  return Object.keys(acc).map(function (k) { return acc[k]; }).sort(function (a, b) { return b.opens - a.opens || (a.key < b.key ? -1 : 1); });
 }

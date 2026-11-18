@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-18 v41';
+  var VERSION = '2026-11-18 v42';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -725,6 +725,106 @@
       h('div', { class: 'row', style: 'margin-top:14px' }, send, h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉'))));
   }
 
+  // ---- 就地快速記帳／記餐費（今日頁的「記一筆」）：沿用「記錄」頁的欄位、驗證與寫入規則，不用跳頁 ----
+  function quickLedger() { var lg = state.data && state.data.ledger; return lg && lg.categories ? lg : null; }
+  function quickNotReady() {
+    loadLedger();
+    return modalShell('記一筆', h('div', null, h('p', { class: 'muted' }, '記錄資料還在載入（或要連上網），稍等一下再點一次「記一筆」。'),
+      h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+  }
+  function quickSeg(values, current, onPick) {
+    var box = h('div', { class: 'seg' });
+    function paint() {
+      box.textContent = '';
+      values.forEach(function (v) {
+        box.appendChild(h('button', { class: 'btn' + (current() === v ? ' on' : ''), type: 'button', 'aria-pressed': String(current() === v), onclick: function () { onPick(v); paint(); } }, v));
+      });
+    }
+    paint();
+    box.paint = paint;
+    return box;
+  }
+
+  function quickExpenseModal(m) {
+    var lg = quickLedger();
+    if (!lg) return quickNotReady();
+    var cats = lg.categories.expense, cid = uuid(), q = { category: cats.big[0], method: LS.get('habit.ledger.method', '刷卡') };
+    var catSel = h('select', { id: 'q-cat', name: 'category', onchange: function (ev) { q.category = ev.target.value; } }, cats.big.map(function (o) { return h('option', { value: o }, o); }));
+    var desc = h('input', { type: 'text', id: 'q-desc', autocomplete: 'off', 'aria-label': '項目描述' });
+    var amt = h('input', { type: 'text', id: 'q-amt', inputmode: 'decimal', autocomplete: 'off', 'aria-label': '金額' });
+    var save = h('button', { class: 'btn primary grow', type: 'submit' }, '記下這筆');
+    var recent = LS.get('habit.ledger.recent', []).filter(function (r) { return r.type === '支出'; }).slice(0, 6);
+    var methodSeg = quickSeg(['刷卡', '現金'], function () { return q.method; }, function (v) { q.method = v; });
+    var form = h('form', { onsubmit: function (ev) {
+      ev.preventDefault();
+      var entry = { date: m.date, type: '支出', category: q.category, sub: q.sub || '', desc: desc.value.trim(), amount: amt.value, method: q.method, note: '' };
+      try { expenseRow(entry); } catch (e) { toast(e.message); return; }
+      save.disabled = true; save.textContent = '寫入中…';
+      api('ledgerExpense', { clientId: cid, entry: entry }).then(function (res) {
+        lg.expenses = (lg.expenses || []).concat([{ row: res.result.row, date: entry.date, type: entry.type, category: entry.category, sub: entry.sub, desc: entry.desc, amount: parseAmount(entry.amount), method: entry.method, note: entry.note }]);
+        rememberExpense(entry);
+        state.modal = null; renderModal();
+        tickByName(/記帳/, entry.date, '');
+        toast('已記下：' + (entry.desc || entry.category) + ' ' + parseAmount(entry.amount));
+      }).catch(function (e) {
+        toast(e.network ? '需要網路才能記錄，內容還在，連上網再按一次' : e.message);
+        save.disabled = false; save.textContent = '記下這筆';
+      });
+    } },
+      recent.length ? h('div', null, h('div', { class: 'muted' }, '常用（點一下帶入）'),
+        h('div', { class: 'flags' }, recent.map(function (r) {
+          return h('button', { class: 'fl', type: 'button', onclick: function () { q.category = r.category; q.sub = r.sub || ''; q.method = r.method; catSel.value = r.category; desc.value = r.desc; amt.value = r.amount; methodSeg.paint(); } }, (r.desc || r.category) + ' ' + r.amount);
+        }))) : null,
+      h('label', { class: 'f', for: 'q-cat' }, '大類'), catSel,
+      h('label', { class: 'f', for: 'q-desc' }, '項目描述'), desc,
+      h('label', { class: 'f', for: 'q-amt' }, '金額'), amt,
+      methodSeg,
+      h('div', { class: 'row', style: 'margin-top:12px' }, save,
+        h('button', { class: 'btn', type: 'button', onclick: function () {
+          api('ledgerNoSpend', { clientId: cid, date: m.date }).then(function () { state.modal = null; renderModal(); tickByName(/記帳/, m.date, '今天沒花錢'); toast('好的，記為「沒花錢」'); })
+            .catch(function (e) { toast(e.network ? '需要網路' : e.message); });
+        } }, '沒花錢'),
+        h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+    return modalShell('記一筆・' + dayLabel(m.date), form);
+  }
+
+  function quickMealModal(m) {
+    var lg = quickLedger();
+    if (!lg) return quickNotReady();
+    var cid = uuid(), q = { meal: defaultMeal(new Date().getHours()) };
+    var content = h('input', { type: 'text', id: 'qm-content', autocomplete: 'off', 'aria-label': '內容' });
+    var amt = h('input', { type: 'text', id: 'qm-amt', inputmode: 'decimal', autocomplete: 'off', 'aria-label': '金額' });
+    var save = h('button', { class: 'btn primary grow', type: 'submit' }, '記下這餐');
+    var form = h('form', { onsubmit: function (ev) {
+      ev.preventDefault();
+      var entry = { date: m.date, meal: q.meal, content: content.value, amount: amt.value };
+      try { mergeMeal(null, entry); } catch (e) { toast(e.message); return; }
+      save.disabled = true; save.textContent = '寫入中…';
+      api('ledgerMeal', { clientId: cid, entry: entry }).then(function () {
+        var rows = lg.meals || [], row = rows.filter(function (r) { return r.date === entry.date; })[0];
+        if (!row) { row = { date: entry.date, meals: {} }; MEAL_NAMES.forEach(function (n) { row.meals[n] = { content: '', amount: 0 }; }); rows = rows.concat([row]); }
+        var cur = row.meals[entry.meal];
+        cur.content = cur.content && entry.content.trim() ? cur.content + ' ' + entry.content.trim() : (cur.content || entry.content.trim());
+        cur.amount += parseMealAmount(entry.amount);
+        lg.meals = rows;
+        state.modal = null; renderModal();
+        tickByName(/餐費/, entry.date, '');
+        toast('已記下這餐');
+      }).catch(function (e) {
+        toast(e.network ? '需要網路才能記錄，內容還在，連上網再按一次' : e.message);
+        save.disabled = false; save.textContent = '記下這餐';
+      });
+    } },
+      quickSeg(MEAL_NAMES, function () { return q.meal; }, function (v) { q.meal = v; }),
+      h('label', { class: 'f', for: 'qm-content' }, '內容（下面的符號會加進內容，分數公式靠它計算）'), content,
+      h('div', { class: 'flags' }, LEDGER_CHIPS.map(function (c) {
+        return h('button', { class: 'fl', type: 'button', onclick: function () { content.value = content.value ? content.value.replace(/\s+$/, '') + ' ' + c[0] : c[0]; } }, c[0] + c[1]);
+      })),
+      h('label', { class: 'f', for: 'qm-amt' }, '金額（不分現金／刷卡，可留空）'), amt,
+      h('div', { class: 'row', style: 'margin-top:12px' }, save, h('button', { class: 'btn', type: 'button', onclick: closeModal }, '關閉')));
+    return modalShell('記這餐・' + dayLabel(m.date), form);
+  }
+
   function renderModal() {
     navSync(); // 彈窗常被直接開關（不經 render），這裡也要同步手機返回鍵的歷史
     var host = document.getElementById('modal');
@@ -734,7 +834,7 @@
     host.textContent = '';
     host.dataset.key = key;
     var c = ctx();
-    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'catchup' ? catchupModal() : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : m.type === 'squat' ? squatModal(m) : minutesModal(m, c));
+    host.appendChild(m.type === 'counter' ? counterModal(m, c) : m.type === 'options' ? optionsModal(m, c) : m.type === 'tier' ? tierModal(m, c) : m.type === 'train' ? trainModal(m) : m.type === 'manualTrain' ? manualTrainModal(m) : m.type === 'catchup' ? catchupModal() : m.type === 'strength' ? strengthModal(m) : m.type === 'redeem' ? redeemModal() : m.type === 'squat' ? squatModal(m) : m.type === 'qexp' ? quickExpenseModal(m) : m.type === 'qmeal' ? quickMealModal(m) : minutesModal(m, c));
     var first = host.querySelector('input,button');
     if (first) first.focus();
   }
@@ -773,10 +873,15 @@
         cue ? h('div', { class: 'muted' }, '📍 ' + cue) : null,
         done && note ? h('div', { class: 'muted' }, note) : null,
         !done && hasOptions(t) ? h('div', { class: 'muted' }, '點勾選，選今天做了什麼') : (t.id === SQUAT_TASK_ID && !done ? h('div', { class: 'muted' }, '點勾記次數，隨時都能記') : null)),
+      isCounterTask(t) && !done ? h('button', { class: 'btn small', type: 'button', 'aria-label': t.name + ' 一鍵記為普通', onclick: function () { checkTask(t, date, '標準', DIET_PLAIN); } }, '普通') : null,
       ex ? h('button', { class: 'btn small', 'aria-label': '取消免責 ' + t.name, onclick: function () { unexemptTask(t, date); } }, '取消免責') : null,
       canExempt(t, date, c) ? h('button', { class: 'btn small', 'aria-label': '用免責券抵免 ' + t.name, onclick: function () { exemptTask(t, date); } }, '🎫') : null,
       tiered ? h('button', { class: 'btn small', 'aria-label': t.name + ' 選擇進階或最低', onclick: function () { state.modal = { type: 'tier', task: t, date: date }; renderModal(); } }, '⋯') : null,
-      ledgerKindOf(t) && !done ? h('button', { class: 'btn small primary', onclick: function () { openLedger(ledgerKindOf(t), date); } }, '填寫') : null,
+      (function () {
+        var k = ledgerKindOf(t);
+        if (k === 'expense' || k === 'meal') return h('button', { class: 'btn small primary', type: 'button', onclick: function () { state.modal = { type: k === 'meal' ? 'qmeal' : 'qexp', task: t, date: date }; renderModal(); } }, done ? '再記一筆' : '記一筆');
+        return k && !done ? h('button', { class: 'btn small primary', onclick: function () { openLedger(k, date); } }, '填寫') : null;
+      })(),
       t.link ? h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn small' }, '開啟') : null);
   }
 
@@ -2614,6 +2719,25 @@
 
   // ---- settings ----
 
+  // ---- 頁面使用次數：只存在這支手機（habit.usage），不上傳；設定頁最底下可看與清除 ----
+  var USAGE_LABELS = { today: '今日', train: '訓練', effort: '努力', health: '健康', more: '更多', ledger: '記錄', game: '成就', rewards: '星幣與兌換', dreams: '夢想', map: '冒險地圖', tasks: '任務', plan: '月/季', settings: '設定' };
+  var usageLastTab = null;
+  function usageTouch(tab) {
+    if (tab === usageLastTab) return;
+    usageLastTab = tab;
+    try { LS.set('habit.usage', usageBump(LS.get('habit.usage', {}), today(), tab, 30)); } catch (e) { /* 量測失敗不影響使用 */ }
+  }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') usageLastTab = null; });   // 重新打開 App 算再開一次
+  function usageCard() {
+    var rows = usageSummary(LS.get('habit.usage', {}), today(), 30);
+    var list = rows.length ? rows.map(function (r) {
+      return h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, USAGE_LABELS[r.key] || r.key), h('span', { class: 'muted' }, r.opens + ' 次・' + r.days + ' 天'));
+    }) : [h('div', { class: 'muted' }, '還沒有紀錄。')];
+    return h('div', { class: 'card' }, h('div', { class: 'name' }, '📊 頁面使用次數（近 30 天）'),
+      h('div', { class: 'muted' }, '只存在這支手機，不會上傳。用來看哪些頁面你其實很少打開。'), list,
+      h('button', { class: 'btn small danger', type: 'button', style: 'margin-top:8px', onclick: function () { if (!confirm('清除頁面使用次數？')) return; LS.set('habit.usage', {}); render(); } }, '清除'));
+  }
+
   function renderSettings() {
     var cfg = state.cfg || { url: '', secret: '' };
     var form = h('form', { class: 'card', onsubmit: function (ev) {
@@ -2646,6 +2770,7 @@
         } }, '儲存')));
     }
     nodes.push(h('p', { class: 'muted' }, '程式版本：' + VERSION));
+    nodes.push(usageCard());
     nodes.push(h('p', { class: 'muted' }, '後端 API 級別：' + (sync.apiSeen ? (sync.apiLevel >= 0 ? 'L' + sync.apiLevel : '沒有回報') : '還沒連線') + '（前端需要 L' + API_LEVEL + '）・上次同步成功：' + (sync.lastOk ? hhmm(sync.lastOk) : '沒有紀錄')));
     if (state.cfg) {
       nodes.push(h('p', { class: 'muted' }, '尚未送出的打卡：' + state.queue.length + ' 筆'));
@@ -2839,6 +2964,7 @@
   function render() {
     var view = document.getElementById('view');
     var tab = state.cfg ? state.tab : 'settings';
+    usageTouch(tab);
     var nodes;
     if (tab !== 'settings' && !state.data) nodes = [h('p', { class: 'muted' }, '載入中…（第一次需要網路）')];
     else nodes = withBack(tab, tab === 'today' ? renderToday() : tab === 'ledger' ? renderLedger() : tab === 'train' ? renderTrain() : tab === 'effort' ? renderEffort() : tab === 'health' ? renderHealth() : tab === 'more' ? renderMore() : tab === 'game' ? renderGame() : tab === 'rewards' ? renderRewards() : tab === 'dreams' ? renderDreams() : tab === 'map' ? renderMap() : tab === 'tasks' ? renderTasks() : tab === 'plan' ? renderPlan() : renderSettings());

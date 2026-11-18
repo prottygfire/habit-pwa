@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-18 v40';
+  var VERSION = '2026-11-18 v41';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -119,6 +119,17 @@
     retryTimer = setTimeout(function () { retryTimer = null; flush().then(function () { if (state.tab === 'settings') render(); }); }, 15000);
   }
 
+  // 同步狀態：上次成功的時間（存手機上）、目前的失敗原因、後端回報的 API 級別
+  var sync = { lastOk: LS.get('habit.syncOk', 0) || 0, err: '', apiLevel: undefined, apiSeen: false };
+  function hhmm(ms) { var d = new Date(ms); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
+  function setSyncErr(err) {
+    if (sync.err === err) return;
+    sync.err = err;
+    if (state.tab === 'today') render();
+  }
+  function syncOk() { sync.lastOk = Date.now(); LS.set('habit.syncOk', sync.lastOk); setSyncErr(''); }
+  function syncErrOf(e) { return e.network ? '連不上伺服器' : e.transient ? '伺服器暫時忙碌' : ''; }
+
   var flushing = false;
   function flush() {
     if (flushing || !state.cfg || !state.queue.length) return Promise.resolve();
@@ -132,8 +143,8 @@
         return next();
       });
     }
-    return next().catch(function (e) {
-      if (e.network || e.transient) { retryFlushLater(); return; }   // nothing is dropped: the check-in stays queued and goes out on the next try
+    return next().then(syncOk).catch(function (e) {
+      if (e.network || e.transient) { setSyncErr(syncErrOf(e)); retryFlushLater(); return; }   // nothing is dropped: the check-in stays queued and goes out on the next try
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; return; }
       state.queue.shift();
       LS.set('habit.queue', state.queue);
@@ -161,11 +172,13 @@
         changed = !before || before !== JSON.stringify(Object.assign({}, state.data, { ledger: null }));
         state.rev++;
         LS.set('habit.data', state.data);
+        sync.apiLevel = res.apiLevel; sync.apiSeen = true;
+        syncOk();
       });
     }).catch(function (e) {
       if (e.unauthorized) { toast('暗號不正確，請到設定重新輸入'); state.tab = 'settings'; }
       else if (!e.network && !e.transient) toast(e.message);
-      else changed = false;
+      else { changed = false; setSyncErr(syncErrOf(e)); }
     }).then(function () { if (quiet === true && !changed && !stale) return; render(); celebrate(); if (stale) setTimeout(refresh, 600); else if (state.data && state.cfg && state.tab !== 'ledger') loadLedger(); });
   }
 
@@ -799,12 +812,23 @@
   }
 
   // Home has two sub-tabs like MyRoutine's 日常作息 / 待辦事項; the 待辦 pane is the same one as 記錄 > 待辦.
+  // 今日頁頂端：只在「有沒送出的紀錄、同步失敗、後端不是最新版」時出現；點一下立刻重試
+  function syncBannerNode() {
+    if (!state.cfg) return null;
+    var txt = syncBannerText(state.queue.length, sync.lastOk ? hhmm(sync.lastOk) : '', sync.err);
+    var mis = sync.apiSeen && apiMismatch(sync.apiLevel) ? apiMismatchText(sync.apiLevel) : '';
+    if (!txt && !mis) return null;
+    return h('button', { class: 'card sync-banner', type: 'button', onclick: function () { toast('重試中…'); refresh(false); } },
+      txt ? h('div', null, txt) : null, mis ? h('div', { class: 'muted' }, mis) : null, txt ? h('div', { class: 'muted' }, '點一下立刻重試') : null);
+  }
+
   function renderToday() {
     var pane = state.homePane === 'todo' ? 'todo' : 'habits';
     var seg = h('div', { class: 'seg' }, [['habits', '日常作息'], ['todo', '待辦事項']].map(function (p) {
       return h('button', { class: 'btn' + (pane === p[0] ? ' on' : ''), 'aria-pressed': String(pane === p[0]), onclick: function () { state.homePane = p[0]; render(); } }, p[1]);
     }));
-    return [seg].concat(pane === 'todo' ? todoPane(ledgerState()) : renderTodayHabits().concat(roadmapTodayCard() || []));
+    var ban = syncBannerNode();
+    return (ban ? [ban] : []).concat([seg]).concat(pane === 'todo' ? todoPane(ledgerState()) : renderTodayHabits().concat(roadmapTodayCard() || []));
   }
 
   function renderTodayHabits() {
@@ -2622,6 +2646,7 @@
         } }, '儲存')));
     }
     nodes.push(h('p', { class: 'muted' }, '程式版本：' + VERSION));
+    nodes.push(h('p', { class: 'muted' }, '後端 API 級別：' + (sync.apiSeen ? (sync.apiLevel >= 0 ? 'L' + sync.apiLevel : '沒有回報') : '還沒連線') + '（前端需要 L' + API_LEVEL + '）・上次同步成功：' + (sync.lastOk ? hhmm(sync.lastOk) : '沒有紀錄')));
     if (state.cfg) {
       nodes.push(h('p', { class: 'muted' }, '尚未送出的打卡：' + state.queue.length + ' 筆'));
       nodes.push(h('div', { class: 'row' },

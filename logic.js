@@ -1,4 +1,4 @@
-// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js, roadmap.js, nav.js and squat.js by build.py. Edit the sources, not this copy.
+// GENERATED from shared/logic.js, game.js, insights.js, ledger.js, todos.js, dreams.js, diet.js, diary_habit.js, history.js, effort.js, trainplan.js, roadmap.js, nav.js, squat.js and sync.js by build.py. Edit the sources, not this copy.
 // Pure habit logic. Single source of truth: build.py copies this to gas/Logic.gs and web/logic.js.
 // Runs in Apps Script (V8), browsers and tests. No Date.now / time zones: callers pass 'YYYY-MM-DD' and 'HH:MM'.
 //
@@ -2628,4 +2628,25 @@ function squatWeekSum(logs, date) {
   var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), sum = 0;
   logs.forEach(function (l) { if (l.taskId === SQUAT_TASK_ID && l.date >= start && l.date <= end) sum += squatTotal(l.note); });
   return sum;
+}
+
+// 前後端對照與同步狀態（純函式）。
+// API_LEVEL：後端 API 新增或改變行為時加 1。前端和後端編進同一個數字；後端在 bootstrap 回應裡回報自己編進去的那個，
+// 前端拿它跟自己的比，後端比較舊（或根本沒回報）就是「後端還沒更新到最新版」。
+
+var API_LEVEL = 1;
+
+function apiMismatch(backendLevel) { return !(backendLevel >= API_LEVEL); }
+
+function apiMismatchText(backendLevel) {
+  return '後端還沒更新到最新版（前端要求 L' + API_LEVEL + '，後端' + (backendLevel >= 0 ? ' L' + backendLevel : '沒有回報') + '）。打勾仍可用，請告訴 Claude 部署後端。';
+}
+
+// 今日頁頂端的同步橫幅文字；沒事（沒有未送出、也沒有同步失敗）回空字串，橫幅就不出現
+// queued：待送筆數；lastOkLabel：上次成功的時間（例如 '14:05'，沒有就空字串）；err：目前的失敗原因（沒有就空字串）
+function syncBannerText(queued, lastOkLabel, err) {
+  if (!(queued > 0) && !err) return '';
+  var ok = lastOkLabel ? '最後成功 ' + lastOkLabel : '還沒成功同步過';
+  if (queued > 0) return '⚠ ' + queued + ' 筆還沒同步' + (err ? '（' + err + '）' : '') + '・' + ok;
+  return '⚠ ' + err + '・顯示的是上次的資料（' + ok + '）';
 }

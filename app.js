@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-18 v42';
+  var VERSION = '2026-11-18 v43';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -121,6 +121,7 @@
 
   // 同步狀態：上次成功的時間（存手機上）、目前的失敗原因、後端回報的 API 級別
   var sync = { lastOk: LS.get('habit.syncOk', 0) || 0, err: '', apiLevel: undefined, apiSeen: false };
+  var loadInfo = LS.get('habit.loadInfo', null);   // 上次成功重抓：{rows 紀錄列數, ms 載入毫秒, at 時間}，設定頁監看資料量用
   function hhmm(ms) { var d = new Date(ms); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
   function setSyncErr(err) {
     if (sync.err === err) return;
@@ -158,7 +159,7 @@
     var stale = false, changed = true;
     return flush().then(function () {
       if (state.queue.length) return;
-      var seq = state.mutations;
+      var seq = state.mutations, t0 = Date.now();
       return api('bootstrap').then(function (res) {
         // You may have ticked something while this request was on its way: the answer was read before that change, so applying it
         // would put the task back to unchecked. Drop it and sync again once the new change has been sent.
@@ -173,6 +174,7 @@
         state.rev++;
         LS.set('habit.data', state.data);
         sync.apiLevel = res.apiLevel; sync.apiSeen = true;
+        loadInfo = { rows: (res.logs || []).length, ms: Date.now() - t0, at: Date.now() }; LS.set('habit.loadInfo', loadInfo);
         syncOk();
       });
     }).catch(function (e) {
@@ -1041,6 +1043,14 @@
     render();
   }
 
+  // 換一個：預覽階段（還沒按「開始」）不滿意就再抽一個，不會抽到同一個，也不會用掉次數
+  function rerollNow() {
+    var c = drawChallenge(dget('library'), trainStateOn(today()), Math.random(), state.place, state.preview && state.preview.move);
+    if (!c) { toast('目前只有這一個動作可以抽，沒有別的可以換'); return; }
+    state.preview = c;
+    render();
+  }
+
   function startChallenge() {
     var c = state.preview;
     if (!c) return;
@@ -1081,10 +1091,11 @@
         h('button', { class: 'btn' + (over ? ' primary grow' : ''), onclick: function () { resolveChallenge(over ? '失敗' : '放棄'); } }, over ? '結束' : '放棄')));
     } else if (state.preview) {
       box.appendChild(h('div', { class: 'timer small' }, challengeText(state.preview)));
-      box.appendChild(h('div', { class: 'muted' }, state.preview.place + '・' + state.preview.level + '量（依今天的狀態）・按「開始」才計時，也才用掉一次機會'));
+      box.appendChild(h('div', { class: 'muted' }, state.preview.place + '・' + state.preview.level + '量（依今天的狀態）・按「開始」才計時，也才用掉一次機會；不想做可以直接換一個'));
       challengeHelp(state.preview).forEach(function (n) { box.appendChild(n); });
       box.appendChild(h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { class: 'btn primary grow', onclick: startChallenge }, '開始'),
+        h('button', { class: 'btn', onclick: rerollNow }, '🎲 換一個'),
         h('button', { class: 'btn', onclick: function () { state.preview = null; render(); } }, '先不要')));
     } else {
       box.appendChild(h('div', { class: 'muted' }, '隨機從你的動作庫抽一個，時間內完成有加分，沒完成不扣分。今天還有 ' + left + ' 次。'));
@@ -2771,6 +2782,8 @@
     }
     nodes.push(h('p', { class: 'muted' }, '程式版本：' + VERSION));
     nodes.push(usageCard());
+    var ls = loadStatus(loadInfo ? loadInfo.rows : undefined, loadInfo ? loadInfo.ms : undefined);
+    nodes.push(h('p', { class: 'muted', style: ls.warn ? 'color:#E8830C;font-weight:600' : '' }, ls.text + (loadInfo ? '・上次重抓 ' + hhmm(loadInfo.at) : '')));
     nodes.push(h('p', { class: 'muted' }, '後端 API 級別：' + (sync.apiSeen ? (sync.apiLevel >= 0 ? 'L' + sync.apiLevel : '沒有回報') : '還沒連線') + '（前端需要 L' + API_LEVEL + '）・上次同步成功：' + (sync.lastOk ? hhmm(sync.lastOk) : '沒有紀錄')));
     if (state.cfg) {
       nodes.push(h('p', { class: 'muted' }, '尚未送出的打卡：' + state.queue.length + ' 筆'));
@@ -2990,10 +3003,11 @@
   window.addEventListener('online', function () { refresh(); });
   // A tab that stays open and visible (desktop browser) never gets a visibilitychange, so changes made on the phone would not show up:
   // pull again when the window regains focus and once a minute, but only when nothing is being typed or shown over the page.
-  window.addEventListener('focus', function () { refresh(true); });
+  window.addEventListener('focus', function () { if (shouldRefresh('focus', Date.now(), loadInfo && loadInfo.at)) refresh(true); });
   setInterval(function () {
     var el = document.activeElement, typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
     if (document.hidden || !state.cfg || !state.data || state.modal || state.challenge || typing || state.queue.length || flushing) return;
+    if (!shouldRefresh('tick', Date.now(), loadInfo && loadInfo.at)) return;
     refresh(true);
   }, 60000);
   var hiddenAt = 0;
@@ -3002,7 +3016,7 @@
     if (hiddenAt && Date.now() - hiddenAt > 10 * 60 * 1000) setTimeout(showLaunchReminder, 300);   // came back after a while: same as opening the app
     if (state.openedOn !== today()) { state.openedOn = today(); state.date = today(); state.trainDate = today(); }
     state.date = state.date > today() ? today() : state.date;
-    refresh();
+    if (shouldRefresh('focus', Date.now(), loadInfo && loadInfo.at)) refresh(); else render();
   });
   if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(function () { /* offline shell is optional */ });
 

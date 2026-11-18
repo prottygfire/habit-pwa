@@ -1038,12 +1038,13 @@ function computeGame(data, today) {
 
 // Draws one move from the 運動動作庫. rand in [0, 1). state: today's 精神好 / 普通 / 疲勞.
 // place: '在家' draws from every active move; '在外面' only from moves whose 地點 is 辦公室.
+// exclude（選填）: a move name to leave out — 「換一個」 passes the move that was just drawn, so you never get the same one again; null when nothing else is left.
 // library rows: {move, kind, unit, easy, standard, hard, minutes, active, place, howto, links, images}
-function drawChallenge(library, state, rand, place) {
+function drawChallenge(library, state, rand, place, exclude) {
   var outside = place === '在外面';
   var pool = library.filter(function (r) {
     return r.active !== false && Number(r.minutes) > 0 && (Number(r.standard) > 0 || Number(r.easy) > 0 || Number(r.hard) > 0) &&
-      (!outside || r.place === '辦公室');
+      (!outside || r.place === '辦公室') && (!exclude || r.move !== exclude);
   });
   if (!pool.length) return null;
   var r = pool[Math.min(pool.length - 1, Math.floor(rand * pool.length))];
@@ -2649,6 +2650,21 @@ function syncBannerText(queued, lastOkLabel, err) {
   var ok = lastOkLabel ? '最後成功 ' + lastOkLabel : '還沒成功同步過';
   if (queued > 0) return '⚠ ' + queued + ' 筆還沒同步' + (err ? '（' + err + '）' : '') + '・' + ok;
   return '⚠ ' + err + '・顯示的是上次的資料（' + ok + '）';
+}
+
+// 背景重抓資料：取得焦點／回到畫面要距上次成功抓取至少 3 分鐘；畫面開著時每分鐘檢查一次，要至少 5 分鐘。
+// lastOk（毫秒）沒有或是 0 ＝從沒成功過，馬上抓。自己打勾的改動是先在手機上生效的，不受這個限制。
+var REFRESH_FOCUS_MS = 3 * 60000;
+var REFRESH_TICK_MS = 5 * 60000;
+function shouldRefresh(kind, now, lastOk) {
+  return now - (lastOk || 0) >= (kind === 'tick' ? REFRESH_TICK_MS : REFRESH_FOCUS_MS);
+}
+
+// 設定頁的資料量監看：紀錄超過 5000 列或載入超過 3 秒就警示（只顯示，不推播）
+function loadStatus(rows, loadMs) {
+  if (rows === undefined || loadMs === undefined) return { warn: false, text: '還沒有載入紀錄' };
+  var warn = rows > 5000 || loadMs > 3000;
+  return { warn: warn, text: '紀錄 ' + rows + ' 列・上次載入 ' + loadMs + ' 毫秒' + (warn ? '・⚠ 資料偏多或偏慢，需要時請 Claude 做歷史封存' : '') };
 }
 
 // 頁面使用次數（只存在手機本機，不上傳）：{ '日期': { 頁面代號: 開了幾次 } }。純函式。

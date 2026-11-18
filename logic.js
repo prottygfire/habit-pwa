@@ -2452,7 +2452,8 @@ function attributeActivities_(acts, pool) {
   });
 }
 
-// 冒險地圖：把技能點換成地圖上的位置（0～19，對應 Lv1～Lv20 的 20 個路標）。
+// 冒險地圖：把技能點換成地圖上的位置。第一章 0～19 對應 Lv1～Lv20 的 20 個路標；
+// 第二章 0～20：位置 0＝入口（剛好 Lv20），位置 k＝Lv(20+k)，Lv40＝位置 20（共 21 個點）。
 // 純函式，不碰 window／document；會被併進 Apps Script，所以函式名一律以 roadmap 開頭。
 // 依賴 game.js 的 levelOf、levelCum、SKILLS。
 
@@ -2494,13 +2495,45 @@ function roadmapTrail(waypoints, from, to, steps) {
   return out;
 }
 
-// skills = game().skills；回傳今天增加最多的技能，全 0 回 null；同分取 SKILLS 順序
+function roadmapMax(ch) { return ch === 2 ? 20 : ROADMAP_MAX_POS; }
+
+// 目前該看哪一章：到 Lv20 就換成第二章（第一章已走完）
+function roadmapDefaultChapter(sk) { return sk.level >= 20 ? 2 : 1; }
+
+// 第 n 個路標（1 起算）代表的等級：第一章 n＝Lv n；第二章 n＝1 是入口（Lv20），n＝21 是 Lv40
+function roadmapDotLevel(ch, n) { return ch === 2 ? n + 19 : n; }
+
+function roadmapCh2At_(level, sp, start, next) {
+  if (level < 20) return 0;
+  if (level >= 40) return 20;
+  var span = next - start;
+  return (level - 20) + (span > 0 ? Math.max(0, Math.min(1, (sp - start) / span)) : 0);
+}
+
+// ch 章的位置（ch 不是 2 一律當第一章）
+function roadmapPosCh(sk, ch) {
+  if (ch !== 2) return roadmapPos(sk);
+  return roadmapCh2At_(sk.level, sk.sp, sk.levelStart, sk.nextAt);
+}
+
+function roadmapPrevPosCh(sk, ch) {
+  if (ch !== 2) return roadmapPrevPos(sk);
+  var gain = sk.gain || 0;
+  if (gain <= 0) return roadmapPosCh(sk, 2);
+  var p = sk.sp - gain, lv = levelOf(p);
+  return roadmapCh2At_(lv, p, levelCum(lv), levelCum(lv + 1));
+}
+
+// skills = game().skills；回傳今天增加最多的技能（含所在章節 ch 與該章最大位置 max），全 0 回 null；同分取 SKILLS 順序
 function roadmapPickToday(skills) {
   var best = null;
   SKILLS.forEach(function (s) {
     var sk = skills[s];
     if (!sk || !(sk.gain > 0)) return;
-    if (!best || sk.gain > best.gain) best = { skill: s, gain: sk.gain, pos: roadmapPos(sk), prev: roadmapPrevPos(sk) };
+    if (!best || sk.gain > best.gain) {
+      var ch = roadmapDefaultChapter(sk);
+      best = { skill: s, gain: sk.gain, ch: ch, max: roadmapMax(ch), pos: roadmapPosCh(sk, ch), prev: roadmapPrevPosCh(sk, ch) };
+    }
   });
   return best;
 }
@@ -2511,21 +2544,28 @@ function roadmapCaption(skill, gain, goal) {
 
 function roadmapFmt(x) { return x % 1 ? x.toFixed(1) : String(x); }
 
-// 點標記（kind 'marker'）或點第 n 個路標（kind 'dot'，n＝1..20＝等級）的說明文字
-function roadmapTipText(skill, sk, kind, n) {
+// 點標記（kind 'marker'）或點第 n 個路標（kind 'dot'，n 從 1 起算）的說明文字；ch 是正在看的章節（預設第一章）
+function roadmapTipText(skill, sk, kind, n, ch) {
+  ch = ch === 2 ? 2 : 1;
   if (kind === 'dot') {
-    var title = 'Lv' + n + '「' + skillTitle(skill, n) + '」';
-    return n <= sk.level ? title + '・已到達' : title + '・還差 ' + roadmapFmt(levelCum(n) - sk.sp) + ' 點';
+    var lv = roadmapDotLevel(ch, n), title = 'Lv' + lv + '「' + skillTitle(skill, lv) + '」';
+    if (ch === 2 && n === 1) return title + '・第二章入口';
+    return lv <= sk.level ? title + '・已到達' : title + '・還差 ' + roadmapFmt(levelCum(lv) - sk.sp) + ' 點';
   }
   var head = skill + ' Lv' + sk.level + '「' + skillTitle(skill, sk.level) + '」';
   var gain = '今天 +' + roadmapFmt(sk.gain || 0), left = roadmapFmt(sk.nextAt - sk.sp);
+  if (ch === 2) {
+    if (sk.level < 20) return '第二章到 Lv20 解鎖';
+    if (sk.level < 40) return head + '・還差 ' + left + ' 點升級・' + gain;
+    var stars = roadmapStars(sk);
+    return head + '・已到頂' + (stars ? '・精通 +' + stars + ' 級' : '') + '・還差 ' + left + ' 點再升一級・' + gain;
+  }
   if (sk.level < 20) return head + '・還差 ' + left + ' 點升級・' + gain;
-  var stars = roadmapStars(sk);
-  return head + '・已到頂' + (stars ? '・精通 +' + stars + ' 級' : '') + '・還差 ' + left + ' 點再升一級・' + gain;
+  return head + '・第一章已通關・' + gain;
 }
 
-// 到頂（Lv20）之後每多一級就多一顆精通星
-function roadmapStars(sk) { return Math.max(0, sk.level - 20); }
+// 第二章通關（Lv40）之後每多一級就多一顆精通星
+function roadmapStars(sk) { return Math.max(0, sk.level - 40); }
 
 // 從 from 走到 to 之間越過的路標編號（整數，不含起點、含終點）；升級動畫逐站停一下用
 function roadmapStops(from, to) {

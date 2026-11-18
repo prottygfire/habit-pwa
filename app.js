@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2026-11-17 v38';
+  var VERSION = '2026-11-18 v40';
   var SLOT_ORDER = ['早', '午', '晚', '不限'];
   var DIMS = ['健康', '財商', '學習', '情緒', '工作', '娛樂'];
   var FREQ_LABEL = {
@@ -2142,6 +2142,7 @@
   // ---- 冒險地圖 ----
 
   var ROADMAP_GOALS = { '體能': '山頂', '健康': '泉水', '財商': '城門', '學習': '塔頂', '關係': '湖心' };
+  var ROADMAP_GOALS2 = { '體能': '熔岩核心', '健康': '發光泉眼', '財商': '王宮金庫', '學習': '巨大星盤', '關係': '集會大廳' };
 
   function loadMapCfg() {
     if (state.mapLoading || state.mapLoaded) return;
@@ -2152,7 +2153,7 @@
     });
   }
 
-  function skillPos(sk) { return { pos: roadmapPos(sk), prev: roadmapPrevPos(sk) }; }
+  function skillPos(sk, ch) { return { pos: roadmapPosCh(sk, ch), prev: roadmapPrevPosCh(sk, ch) }; }
 
   function renderMap() {
     var g = game();
@@ -2180,22 +2181,32 @@
       });
       nodes.push(box, h('p', { class: 'muted' }, '點一個區域，看你在路上走到哪。每天打卡的技能點會讓旅人往前一小段。'));
       nodes.push(h('div', { class: 'row', style: 'flex-wrap:wrap' }, h('span', { class: 'muted' }, '🔍 預覽到頂之後的樣子：'),
-        [21, 25, 30].map(function (n) { return h('button', { class: 'btn small' + (pvLv === n ? ' primary' : ''), type: 'button', onclick: function () { state.mapPreview = n; render(); } }, 'Lv' + n); })));
+        [25, 40, 45].map(function (n) { return h('button', { class: 'btn small' + (pvLv === n ? ' primary' : ''), type: 'button', onclick: function () { state.mapPreview = n; render(); } }, 'Lv' + n); })));
       return nodes;
     }
-    var sk = skills[s], p = skillPos(sk);
+    var sk = skills[s], hasCh2 = !!(cfg && cfg[s] && cfg[s].ch2);
+    // 縮放、彈窗狀態跨重畫保存；換區域就重來。chapter 沒選過就依等級（Lv20 以上看第二章，且第二章的圖要已經有）
+    if (!state.mapView || state.mapView.skill !== s) state.mapView = { skill: s, zoom: 1, tip: null, chapter: 0 };
+    var ch = hasCh2 ? (state.mapView.chapter || roadmapDefaultChapter(sk)) : 1, p = skillPos(sk, ch);
     nodes.push(h('button', { class: 'btn small', onclick: function () { navBack('map', ''); } }, '‹ 世界地圖'));
-    nodes.push(h('div', { class: 'card' },
-      h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'),
-      h('div', { class: 'muted' }, sk.level >= 20 ? '已走到終點，霧全散了。' + (sk.level > 20 ? '精通 ★' + (sk.level - 20) + '，' : '') + '還差 ' + fmtPts(sk.toNext) + ' 點再升一級・今天 +' + fmtPts(sk.gain) : '還差 ' + fmtPts(sk.toNext) + ' 點升級・今天 +' + fmtPts(sk.gain))));
-    // 縮放、彈窗狀態跨重畫保存；換區域就重來。上次看過的位置存在手機上，等級變高時播「走過去」動畫
-    if (!state.mapView || state.mapView.skill !== s) state.mapView = { skill: s, zoom: 1, tip: null };
-    var seenAll = LS.get('habit.mapSeen', {}) || {}, seen = seenAll[s] || null;
+    if (hasCh2) {
+      nodes.push(h('div', { class: 'seg' }, [1, 2].map(function (n) {
+        var locked = n === 2 && sk.level < 20;
+        return h('button', { class: 'btn' + (ch === n ? ' on' : ''), type: 'button', 'aria-pressed': String(ch === n), disabled: locked,
+          onclick: function () { state.mapView = { skill: s, zoom: 1, tip: null, chapter: n }; render(); } }, (locked ? '🔒 ' : '') + (n === 1 ? '第一章' : '第二章'));
+      })));
+    }
+    var left = fmtPts(sk.toNext) + ' 點', today_ = fmtPts(sk.gain), line;
+    if (ch === 2) line = sk.level < 20 ? '第二章到 Lv20 解鎖' : sk.level < 40 ? '還差 ' + left + '升級・今天 +' + today_ : '第二章已通關，霧全散了。' + (sk.level > 40 ? '精通 ★' + (sk.level - 40) + '，' : '') + '還差 ' + left + '再升一級・今天 +' + today_;
+    else line = sk.level >= 20 ? '第一章已通關，霧全散了。' : '還差 ' + left + '升級・今天 +' + today_;
+    nodes.push(h('div', { class: 'card' }, h('div', { class: 'name' }, s + ' Lv' + sk.level + '「' + sk.title + '」'), h('div', { class: 'muted' }, line)));
+    var seenKey = ch === 2 ? s + '|2' : s;
+    var seenAll = LS.get('habit.mapSeen', {}) || {}, seen = seenAll[seenKey] || null;
     var svgBox = h('div');
     if (state.mapMount) state.mapMount.destroy();
     state.mapMount = RoadmapView.mountRegion(svgBox, {
-      cfg: cfg, skill: s, sk: sk, pos: p.pos, prev: p.prev, view: state.mapView, seen: pvLv ? null : seen, anim: PREFS.anim, debug: /mapdebug/.test(location.search),
-      onSeen: pvLv ? null : function () { seenAll[s] = { pos: p.pos, level: sk.level }; LS.set('habit.mapSeen', seenAll); }
+      cfg: cfg, skill: s, chapter: ch, sk: sk, pos: p.pos, prev: p.prev, view: state.mapView, seen: pvLv ? null : seen, anim: PREFS.anim, debug: /mapdebug/.test(location.search),
+      onSeen: pvLv ? null : function () { seenAll[seenKey] = { pos: p.pos, level: sk.level }; LS.set('habit.mapSeen', seenAll); }
     });
     nodes.push(svgBox);
     return nodes;
@@ -2206,9 +2217,10 @@
     if (!state.data || !state.cfg || state.date !== today()) return null;
     var pick = roadmapPickToday(game().skills);
     if (!pick) return null;
-    return h('button', { class: 'card rm-card', onclick: function () { state.mapRegion = pick.skill; goTab('map'); } },
-      h('div', { class: 'name' }, '🗺 ' + roadmapCaption(pick.skill, fmtPts(pick.gain), ROADMAP_GOALS[pick.skill] || '前方')),
-      h('div', { class: 'rm-bar' }, h('u', { style: 'width:' + Math.round(pick.pos / 19 * 100) + '%' })));
+    var goal = (pick.ch === 2 && ROADMAP_GOALS2[pick.skill]) || ROADMAP_GOALS[pick.skill] || '前方';
+    return h('button', { class: 'card rm-card', onclick: function () { state.mapRegion = pick.skill; state.mapView = null; goTab('map'); } },
+      h('div', { class: 'name' }, '🗺 ' + roadmapCaption(pick.skill, fmtPts(pick.gain), goal)),
+      h('div', { class: 'rm-bar' }, h('u', { style: 'width:' + Math.round(pick.pos / pick.max * 100) + '%' })));
   }
 
   function renderRewards() {

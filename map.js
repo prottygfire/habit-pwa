@@ -19,12 +19,13 @@
       '<text x="300" y="450" text-anchor="middle" font-size="28" fill="' + INK + '">' + text + '</text></svg>';
   }
 
-  // opts: {anim, debug, level, uid}
+  // opts: {anim, debug, level, lit, done, stars, uid}；lit＝亮起的路標數（預設 level）、done＝霧全散（預設 level>=20）、stars＝精通星數（預設依 level）
   function regionSvg(cfg, pos, prev, opts) {
     opts = opts || {};
     if (!cfg) return emptySvg('地圖還沒準備好');
     var W = cfg.w, H = cfg.h, wp = cfg.waypoints, level = opts.level || 1, uid = opts.uid || 'a';
-    var R = cfg.reveal * W, full = level >= 20;
+    var litN = opts.lit !== undefined ? opts.lit : level;
+    var R = cfg.reveal * W, full = opts.done !== undefined ? opts.done : level >= 20;
     var o = ['<svg class="rm-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="冒險地圖">'];
     o.push('<rect width="' + W + '" height="' + H + '" fill="' + PAPER + '"/>');
     o.push('<image href="map/' + cfg.image + '" x="0" y="0" width="' + W + '" height="' + H + '" preserveAspectRatio="xMidYMid slice"/>');
@@ -33,7 +34,7 @@
     if (pos > prev) o.push('<polyline class="rm-new' + (opts.anim ? ' rm-glow' : '') + '" points="' + pts(window.roadmapTrail(wp, prev, pos, 12), W, H) + '" fill="none" stroke="' + GLOW + '" stroke-width="' + (W * 0.02).toFixed(1) + '" stroke-linecap="round"/>');
     // 20 個路標：已到達的亮起
     for (var i = 0; i < wp.length; i++) {
-      var lit = i <= level - 1;
+      var lit = i < litN;
       o.push('<circle data-dot="' + (i + 1) + '" class="rm-dot' + (lit ? ' lit' : '') + '" cx="' + (wp[i].x * W).toFixed(1) + '" cy="' + (wp[i].y * H).toFixed(1) + '" r="' + (W * (lit ? 0.017 : 0.011)).toFixed(1) + '" fill="' + (lit ? GOLD : PAPER) + '" stroke="' + INK + '" stroke-width="4"/>');
     }
     // 終點地標（霧蓋住時只剩剪影）
@@ -51,7 +52,7 @@
       o.push('<rect data-fog="on" width="' + W + '" height="' + H + '" fill="' + PAPER + '" opacity="0.92" mask="url(#rmm' + uid + ')"/>');
     }
     // 精通星：Lv20 之後每多一級一顆，排在地圖左上角（半透明底，各區都不會被畫面邊緣切到；最多畫 10 顆，超過的看彈窗）
-    var nStars = Math.min(10, window.roadmapStars({ level: level }));
+    var nStars = Math.min(10, opts.stars !== undefined ? opts.stars : window.roadmapStars({ level: level }));
     if (nStars) {
       var gap = W * 0.04, sr = W * 0.017, x0 = W * 0.045, y0 = H * 0.04, padX = W * 0.02;
       o.push('<rect x="' + (x0 - padX).toFixed(1) + '" y="' + (y0 - sr * 1.5).toFixed(1) + '" width="' + ((nStars - 1) * gap + padX * 2).toFixed(1) + '" height="' + (sr * 3).toFixed(1) + '" rx="' + (sr * 1.5).toFixed(1) + '" fill="rgba(59,42,26,0.6)"/>');
@@ -83,10 +84,11 @@
     var names = ['體能', '健康', '財商', '學習', '關係'];
     var btns = names.map(function (s) {
       var sk = skills[s] || { level: 1, sp: 0, levelStart: 0, nextAt: 1, gain: 0 };
-      var pct = Math.round(window.roadmapPos(sk) / 19 * 100);
+      var ch = cfg && cfg[s] && cfg[s].ch2 ? window.roadmapDefaultChapter(sk) : 1;   // 第二章的圖還沒放就還是第一章
+      var pct = Math.round(window.roadmapPosCh(sk, ch) / window.roadmapMax(ch) * 100);
       var e = cfg && cfg.world && cfg.world.entries && cfg.world.entries[s];
       var style = e ? ' style="left:' + (e.x * 100).toFixed(1) + '%;top:' + (e.y * 100).toFixed(1) + '%"' : '';
-      return '<button class="rm-entry' + (e ? ' placed' : '') + '" data-skill="' + s + '"' + style + '><b>' + s + '</b><span>Lv' + sk.level + (sk.level > 20 ? ' ★' + (sk.level - 20) : '') + '</span><i class="rm-bar"><u style="width:' + pct + '%"></u></i></button>';
+      return '<button class="rm-entry' + (e ? ' placed' : '') + '" data-skill="' + s + '"' + style + '><b>' + s + '</b><span>Lv' + sk.level + (sk.level > 40 ? ' ★' + (sk.level - 40) : '') + '</span><i class="rm-bar"><u style="width:' + pct + '%"></u></i></button>';
     }).join('');
     var img = cfg && cfg.world ? '<img class="rm-worldimg" src="map/' + cfg.world.image + '" alt="世界地圖" onerror="this.parentNode.classList.add(\'rm-nomap\');this.remove()">' : '';
     return '<div class="rm-world' + (img ? '' : ' rm-nomap') + '">' + img + btns + '</div>';
@@ -99,7 +101,8 @@
   // box：放地圖的容器；o：{cfg, skill, sk, pos, prev, view, seen, anim, debug, onSeen}
   // view 是會跨重畫保存的狀態 {zoom, cx, cy, tip}；seen 是上次看過的 {pos, level}（沒有就不播動畫）
   function mountRegion(box, o) {
-    var cfg = o.cfg && o.cfg[o.skill], view = o.view, sk = o.sk;
+    var all = o.cfg && o.cfg[o.skill], ch = o.chapter === 2 ? 2 : 1, view = o.view, sk = o.sk;
+    var cfg = ch === 2 ? (all && all.ch2) : all;
     if (!cfg) { box.innerHTML = regionSvg(null, 0, 0, {}); return { destroy: function () {} }; }
     var W = cfg.w, H = cfg.h, wp = cfg.waypoints;
     var alive = true, busy = false;
@@ -146,14 +149,18 @@
       if (old) old.remove();
       var pt = tipPoint();
       if (!pt) return;
-      var t = el('div', 'rm-tip' + (pt.y < 0.14 ? ' below' : ''), window.roadmapTipText(o.skill, sk, view.tip.kind, view.tip.n));
+      var t = el('div', 'rm-tip' + (pt.y < 0.14 ? ' below' : ''), window.roadmapTipText(o.skill, sk, view.tip.kind, view.tip.n, ch));
       t.style.left = Math.max(22, Math.min(78, pt.x * 100)).toFixed(1) + '%';
       t.style.top = (pt.y * 100).toFixed(1) + '%';
       inner.appendChild(t);
     }
-    function draw(pos, level, prev) {
+    // 第一章：等級 n 亮 n 個路標；第二章：第 1 點是入口（Lv20），等級 n 亮 n-19 個
+    function litOf(level) { return ch === 2 ? Math.max(0, level - 19) : level; }
+    // fin＝最後的樣子（霧全散、精通星依等級）；升級動畫中途不算
+    function draw(pos, lit, prev, fin) {
       var keep = scroll.scrollLeft, keepY = scroll.scrollTop;
-      inner.innerHTML = regionSvg(cfg, pos, prev, { anim: o.anim, debug: o.debug, level: level, uid: 'r' });
+      inner.innerHTML = regionSvg(cfg, pos, prev, { anim: o.anim, debug: o.debug, lit: lit,
+        done: !!fin && (ch === 2 ? sk.level >= 40 : sk.level >= 20), stars: fin && ch === 2 ? window.roadmapStars(sk) : 0, uid: 'r' });
       scroll.scrollLeft = keep; scroll.scrollTop = keepY;
       drawTip();
     }
@@ -183,7 +190,7 @@
 
     applyZoom();
     var willPlay = !!(o.anim && o.seen && o.seen.level < sk.level && window.roadmapStops(o.seen.pos, o.pos).length);
-    if (willPlay) draw(o.seen.pos, o.seen.level, o.seen.pos); else draw(o.pos, sk.level, o.prev);
+    if (willPlay) draw(o.seen.pos, litOf(o.seen.level), o.seen.pos, false); else draw(o.pos, litOf(sk.level), o.prev, true);
     // 放大時：有存過視野就回到那裡，第一次則對準旅人
     if (view.zoom > 1) {
       if (view.cx === undefined) { var m0 = markerPoint(); view.cx = m0.x; view.cy = m0.y; }
@@ -216,14 +223,14 @@
       stops.forEach(function (k) {
         chain = chain.then(function () { if (!stillHere()) return; return move(k); }).then(function () {
           if (!stillHere()) return;
-          draw(k, k + 1, k);
+          draw(k, k + 1, k, false);
           var dot = inner.querySelector('[data-dot="' + (k + 1) + '"]');
           if (dot) dot.setAttribute('class', 'rm-dot lit rm-pop');
           return wait(pauseMs);
         });
       });
       chain.then(function () { if (!stillHere()) return; return move(o.pos); }).then(function () {
-        if (stillHere()) draw(o.pos, sk.level, o.prev);
+        if (stillHere()) draw(o.pos, litOf(sk.level), o.prev, true);
       }).then(function () { busy = false; }, function () { busy = false; });
     }
     if (willPlay) setTimeout(function () { if (alive && box.isConnected) playLevelUp(); }, 400);

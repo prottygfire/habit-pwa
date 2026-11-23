@@ -2974,7 +2974,7 @@
       wk.push(h('div', { class: 'ef-wrow' }, h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, r.type, r.linked ? h('span', { class: 'ef-same' }, '其中 ' + r.linked + ' 次也在訓練打勾') : null), h('span', { class: 'muted' }, r.n + ' 次・' + minText(r.minutes))),
         h('div', { class: 'bar thin' }, h('i', { style: 'width:' + Math.round(r.minutes / wmax * 100) + '%' }))));
     });
-    if (t.walkOtherN) wk.push(h('div', { class: 'muted', style: 'margin-top:8px' }, '另有 ' + t.walkOtherN + ' 次「走路」共 ' + t.walkOtherMin + ' 分沒有計入：手錶會自動偵測散步並記成走路，不是你按開始的運動（新紀錄會標明「自動」，舊紀錄只能靠心率推測）；只有單次 10 分以上、平均心率在 Zone 2（' + ez[0] + '～' + ez[1] + '）的走路才算。'));
+    if (t.walkOtherN) wk.push(h('div', { class: 'muted', style: 'margin-top:8px' }, '另有 ' + t.walkOtherN + ' 次「走路」共 ' + t.walkOtherMin + ' 分沒有計入：手錶會自動偵測散步並記成走路，不是你按開始的運動；只有單次 10 分以上、平均心率在 Zone 2（' + ez[0] + '～' + ez[1] + '）的走路才算。'));
     nodes.push(foldCard('watch', [ico('⌚'), '手錶運動'], t.watchN + ' 次・' + minText(t.watchMin), wk));
     return nodes;
   }

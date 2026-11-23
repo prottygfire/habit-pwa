@@ -2051,7 +2051,6 @@ function effortWeek(data, anyDateInWeek, trainStart, zone) {
   (data.workouts || []).forEach(function (w) {
     if (!inWeek(w.date)) return;
     var i = at[w.date], m = Number(w.minutes) || 0;
-    if (w.type === '走路' && w.method === '自動') { walkOther.push({ date: w.date, minutes: m, hr: Number(w.hr) || 0 }); return; }
     if (zone && w.type === '走路' && !(m >= WALK_MIN_WATCH_ && Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) { walkOther.push({ date: w.date, minutes: m, hr: Number(w.hr) || 0 }); return; }
     days[i].watchMin += m; days[i].watchN++; days[i].any = true;
     watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '', kind: watchKindOf_(w.type) });
@@ -2175,7 +2174,6 @@ function trainingActivities(date, train, workouts, zone) {
     var kind = watchKindOf_(w.type), min = trainNum_(w.minutes);
     if (!kind || !inWeek(w.date)) return;
     if (kind === 'cardio' && min < (w.type === '走路' ? WALK_MIN_WATCH_ : CARDIO_MIN_WATCH_)) return;
-    if (w.type === '走路' && w.method === '自動') return;   // the watch's own walk detection (phone app 11/23+ says so), not a workout you started
     if (w.type === '走路' && !(Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) return;   // a relaxed walk is not Zone 2 training
     var a = { date: w.date, kind: kind, minutes: Math.round(min), source: 'watch', item: '', label: '', off: !!noCredit[w.date + '|' + kind], type: w.type };
     watch.push(a); out.push(a);

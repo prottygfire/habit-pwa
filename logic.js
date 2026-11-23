@@ -2051,7 +2051,7 @@ function effortWeek(data, anyDateInWeek, trainStart, zone) {
   (data.workouts || []).forEach(function (w) {
     if (!inWeek(w.date)) return;
     var i = at[w.date], m = Number(w.minutes) || 0;
-    if (zone && w.type === '走路' && !(m >= WALK_MIN_WATCH_ && Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) { walkOther.push({ date: w.date, start: w.start || '', minutes: m, hr: Number(w.hr) || 0, method: w.method || '' }); if (m > 0) days[i].any = true; return; }   // an everyday walk makes it an active day, but adds to no total
+    if (zone && w.type === '走路' && !(m >= WALK_MIN_WATCH_ && Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) { walkOther.push({ date: w.date, start: w.start || '', minutes: m, hr: Number(w.hr) || 0, method: w.method || '' }); if (m >= WALK_MIN_WATCH_) days[i].any = true; return; }   // an everyday walk of 10+ minutes makes it an active day, but adds to no total
     days[i].watchMin += m; days[i].watchN++; days[i].any = true;
     watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '', kind: watchKindOf_(w.type) });
   });

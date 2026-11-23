@@ -2974,8 +2974,18 @@
       wk.push(h('div', { class: 'ef-wrow' }, h('div', { class: 'ef-line' }, h('span', { class: 'grow' }, r.type, r.linked ? h('span', { class: 'ef-same' }, '其中 ' + r.linked + ' 次也在訓練打勾') : null), h('span', { class: 'muted' }, r.n + ' 次・' + minText(r.minutes))),
         h('div', { class: 'bar thin' }, h('i', { style: 'width:' + Math.round(r.minutes / wmax * 100) + '%' }))));
     });
-    if (t.walkOtherN) wk.push(h('div', { class: 'muted', style: 'margin-top:8px' }, '另有 ' + t.walkOtherN + ' 次「走路」共 ' + t.walkOtherMin + ' 分沒有計入：手錶會自動偵測散步並記成走路，不是你按開始的運動；只有單次 10 分以上、平均心率在 Zone 2（' + ez[0] + '～' + ez[1] + '）的走路才算。'));
     nodes.push(foldCard('watch', [ico('⌚'), '手錶運動'], t.watchN + ' 次・' + minText(t.watchMin), wk));
+    // 日常走路：不到 Zone 2 標準（單次 10 分以上、平均心率 ' + ez + '）的走路，多半是手錶自動偵測的。也是活動，單獨記下，不進運動時間、有氧與完成項數。
+    if (t.walkOtherN) {
+      var wo = [h('div', { class: 'muted' }, '單次不到 10 分或平均心率不在 Zone 2（' + ez[0] + '～' + ez[1] + '）的走路，多半是手錶自動偵測的日常走動。算你的活動量，但不計入上面的運動時間、有氧與完成項數。')];
+      w.days.forEach(function (d) {
+        var list = w.walkOther.filter(function (x) { return x.date === d.date; });
+        if (!list.length) return;
+        var sum = list.reduce(function (a, x) { return a + x.minutes; }, 0);
+        wo.push(h('div', { class: 'ef-line' }, h('span', { class: 'muted' }, md(d.date)), h('span', { class: 'grow' }, list.length + ' 次' + (list.some(function (x) { return x.method === '自動'; }) ? '（含自動偵測）' : '')), h('b', null, minText(sum))));
+      });
+      nodes.push(foldCard('walk', [ico('🚶'), '日常走路'], t.walkOtherN + ' 次・' + minText(t.walkOtherMin), wo));
+    }
     return nodes;
   }
 
@@ -2992,6 +3002,7 @@
     });
     w.challenges.filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-ch', r.move + ' ' + r.amount, r.result); });
     w.watchRows.filter(function (r) { return r.date === date && !r.trainItem; }).forEach(function (r) { line('ef-watch', r.type, minText(r.minutes)); });
+    w.walkOther.filter(function (r) { return r.date === date; }).forEach(function (r) { line('ef-watch', '日常走路' + (r.method === '自動' ? '（自動偵測）' : ''), minText(r.minutes) + (r.hr ? '・' + r.hr + ' bpm' : '')); });
     w.squatRows.filter(function (r) { return r.date === date; }).forEach(function (r) { if (r.reps) line('ef-sq', '深蹲', r.reps + ' 下'); if (r.abs) line('ef-sq', '腹肌', r.abs + ' 下'); });
     if (!any) box.appendChild(h('div', { class: 'muted' }, '這天沒有運動紀錄。'));
     return box;

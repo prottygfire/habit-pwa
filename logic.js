@@ -478,10 +478,14 @@ function trainItem_(id, kind, title, icon, minutes, detail, easy, up, extra) {
   return o;
 }
 
+// 力量 A／B 日（11/23）：實際上多半去健身房，所以這兩天改成「健身房優先、在家也行」，兩種都抵同一格（力量每週最低 2 次、標準 3 次，不分地點）。
+// A＝下肢、B＝上肢＋臀髖（和週六健身房的兩套同一份清單）；id 與 kind 不變（home-a／home-b、strength-home），歷史紀錄與配額邏輯照舊。
 function homeStrengthItem_(day) {
-  return trainItem_(day === 'A' ? 'home-a' : 'home-b', 'strength-home', '力量 ' + day + ' 日（居家）', '🦾', 35,
-    ['壺鈴＋彈力帶，動作與次數在下面的清單，記下每組幾下、幾公斤', '核心動作已經包含在內，不用另外做核心'],
-    '每個動作做 2 組，或只做前 3 個動作', '每個動作多做 1 組，下放放慢到 4 秒', { day: day, tier: 'min', time: '白天或晚上' });
+  return trainItem_(day === 'A' ? 'home-a' : 'home-b', 'strength-home', '力量 ' + day + ' 日（健身房／居家）', '🦾', 45,
+    ['🏋️ 健身房版（' + (day === 'A' ? '下肢' : '上肢＋臀髖') + '）：器材清單在下面，勾選這次做了哪些、記幾組幾下幾公斤；RPE 7–8，保留 2–3 次餘力',
+      '🏠 居家版：切到「居家」，壺鈴＋彈力帶清單，核心動作已經包含在內',
+      '兩種都算這一格，也可以換天做'],
+    '每個動作做 2 組，或只做前 3 個動作', '主要動作各多做 1 組，下放放慢到 4 秒', { day: day, tier: 'min', time: '白天或晚上' });
 }
 
 function zone2Item_(id, title, minutes, tier) {
@@ -2000,12 +2004,14 @@ function effortDayList_(start) {
 }
 
 // -> {start, end, days[7], mealRows, reps, train, watch, challenges, totals}
-function effortWeek(data, anyDateInWeek, trainStart) {
+// zone: [lo, hi] heart-rate band. A watch 走路 only counts when it is >= WALK_MIN_WATCH_ minutes AND inside the band (same rule as the training plan); the rest are
+// the watch's automatic walk detection (Samsung Health records them as 「走路」 sessions on its own), listed apart as walkOther and left out of every total.
+function effortWeek(data, anyDateInWeek, trainStart, zone) {
   var start = addDays(anyDateInWeek, -(weekdayOf(anyDateInWeek) - 1)), end = addDays(start, 6);
   var dates = effortDayList_(start), at = {};
   var days = dates.map(function (d, i) {
     at[d] = i;
-    return { date: d, meal: 0, squat: 0, trainN: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, any: false };
+    return { date: d, meal: 0, squat: 0, abs: 0, trainN: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, any: false };
   });
   function inWeek(d) { return d >= start && d <= end; }
 
@@ -2033,18 +2039,20 @@ function effortWeek(data, anyDateInWeek, trainStart) {
   var squatRows = [];
   (data.logs || []).forEach(function (l) {
     if (!inWeek(l.date) || l.taskId !== SQUAT_TASK_ID) return;
-    var reps = squatTotal(l.note);
-    if (reps <= 0) return;
-    days[at[l.date]].squat += reps; days[at[l.date]].any = true;
-    squatRows.push({ date: l.date, reps: reps });
+    var reps = squatTotal(l.note), abs = absTotal(l.note);
+    if (reps <= 0 && abs <= 0) return;
+    days[at[l.date]].squat += reps; days[at[l.date]].abs += abs; days[at[l.date]].any = true;
+    squatRows.push({ date: l.date, reps: reps, abs: abs });
   });
   squatRows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 
   // 手錶運動 (sheet 運動) first, so a 訓練 tick can claim the watch session it came from.
-  var watchRows = [];
+  var watchRows = [], walkOther = [];
   (data.workouts || []).forEach(function (w) {
     if (!inWeek(w.date)) return;
     var i = at[w.date], m = Number(w.minutes) || 0;
+    if (w.type === '走路' && w.method === '自動') { walkOther.push({ date: w.date, minutes: m, hr: Number(w.hr) || 0 }); return; }
+    if (zone && w.type === '走路' && !(m >= WALK_MIN_WATCH_ && Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) { walkOther.push({ date: w.date, minutes: m, hr: Number(w.hr) || 0 }); return; }
     days[i].watchMin += m; days[i].watchN++; days[i].any = true;
     watchRows.push({ date: w.date, type: w.type, minutes: m, trainItem: '', kind: watchKindOf_(w.type) });
   });
@@ -2081,12 +2089,13 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     chList.push({ date: c.date, move: c.move, amount: c.amount, level: c.level, result: c.result, ok: ok });
   });
 
-  var t = { squatReps: 0, squatDays: 0, mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0, sameN: 0, uniqueMin: 0 };
+  var t = { squatReps: 0, squatDays: 0, absReps: 0, walkOtherN: 0, walkOtherMin: 0, mealDone: 0, trainSessions: 0, trainMin: 0, watchMin: 0, watchN: 0, chOk: 0, chTry: 0, activeDays: 0, sameN: 0, uniqueMin: 0 };
   days.forEach(function (d) {
     t.mealDone += d.meal; t.trainSessions += d.trainN; t.trainMin += d.trainMin; t.watchMin += d.watchMin; t.watchN += d.watchN;
     t.chOk += d.chOk; t.chTry += d.chTry; if (d.any) t.activeDays++;
-    t.squatReps += d.squat; if (d.squat) t.squatDays++;
+    t.squatReps += d.squat; t.absReps += d.abs; if (d.squat) t.squatDays++;
   });
+  walkOther.forEach(function (x) { t.walkOtherN++; t.walkOtherMin += x.minutes; });
   t.sameN = watchRows.filter(function (w) { return w.trainItem; }).length;
   t.uniqueMin = t.watchMin + trainOnlyMin;   // one workout is counted once: watch minutes, plus ticks that have no watch session
   t.items = t.mealDone + t.trainSessions + t.chOk;   // 手錶 sessions are left out: they are often the same workout as a 訓練 tick
@@ -2096,7 +2105,7 @@ function effortWeek(data, anyDateInWeek, trainStart) {
     reps: repOrder.map(function (k) { return repMap[k]; }),
     train: trainOrder.map(function (k) { return trainMap[k]; }),
     watch: watchOrder.map(function (k) { return watchMap[k]; }).sort(function (a, b) { return b.minutes - a.minutes; }),
-    trainRows: trainRows, watchRows: watchRows, challenges: chList, squatRows: squatRows, totals: t
+    trainRows: trainRows, watchRows: watchRows, challenges: chList, squatRows: squatRows, walkOther: walkOther, totals: t
   };
 }
 
@@ -2166,6 +2175,7 @@ function trainingActivities(date, train, workouts, zone) {
     var kind = watchKindOf_(w.type), min = trainNum_(w.minutes);
     if (!kind || !inWeek(w.date)) return;
     if (kind === 'cardio' && min < (w.type === '走路' ? WALK_MIN_WATCH_ : CARDIO_MIN_WATCH_)) return;
+    if (w.type === '走路' && w.method === '自動') return;   // the watch's own walk detection (phone app 11/23+ says so), not a workout you started
     if (w.type === '走路' && !(Number(w.hr) >= zone[0] && Number(w.hr) <= zone[1])) return;   // a relaxed walk is not Zone 2 training
     var a = { date: w.date, kind: kind, minutes: Math.round(min), source: 'watch', item: '', label: '', off: !!noCredit[w.date + '|' + kind], type: w.type };
     watch.push(a); out.push(a);
@@ -2606,30 +2616,52 @@ function navStep(prev, cur) {
 // 常駐的「深蹲」加分任務：隨時記次數，不強迫。次數存在打卡紀錄的備註，格式「深蹲*60」（和飯前飯後的深蹲選項同格式，月／季頁的動作統計會一起加總）。
 // 它是一個一般的加分任務（試算表「任務」分頁一列，類別＝加分、技能＝體能），所以有記錄就給技能點；
 // 但每天都有、不是目標，所以不算進「還有 N 項加分」與加分完成數（isFreeBonus）。
+// 腹肌（11/23）：同一個任務、同一則備註的另一個項目，例如「深蹲*60、腹肌*30」，不用新增任務列也不用換後端；
+// 只記腹肌的那天也算有記錄（給技能點、算有動的日子）。
 
 var SQUAT_TASK_ID = 'tsq5a0001';
 var SQUAT_NAME = '深蹲';
+var ABS_NAME = '腹肌';
 
 function isFreeBonus(task) { return !!task && task.id === SQUAT_TASK_ID; }
 
-// 備註裡深蹲的總次數（備註可能還有別的項目，只算「深蹲」）
-function squatTotal(note) {
+// 備註裡某個動作的總次數（備註可能還有別的項目，只算指定的那個）
+function moveTotal(note, name) {
   var sum = 0;
-  parseNote(note).forEach(function (p) { if (p.base === SQUAT_NAME) sum += p.count; });
+  parseNote(note).forEach(function (p) { if (p.base === name) sum += p.count; });
   return sum;
 }
+
+// 把備註裡某個動作改成 total 下（<=0 就拿掉那一項），其他項目原封不動；全空回空字串（呼叫端據此取消當天的打卡）
+function moveNoteSet(note, name, total) {
+  var items = [], placed = false;
+  parseNote(note).forEach(function (p) {
+    if (p.base === name) {
+      if (!placed && total > 0) { items.push(noteItem(name, total)); placed = true; }
+    } else items.push(noteItem(p.base, p.count));
+  });
+  if (!placed && total > 0) items.push(noteItem(name, total));
+  return items.join('、');
+}
+
+// 備註裡深蹲的總次數
+function squatTotal(note) { return moveTotal(note, SQUAT_NAME); }
+function absTotal(note) { return moveTotal(note, ABS_NAME); }
 
 function squatNote(total) { return total > 0 ? noteItem(SQUAT_NAME, total) : ''; }
 
 // 在目前的備註上加（或扣）delta 下；扣到 0 以下回空字串（呼叫端據此取消當天的打卡）
 function squatAdd(note, delta) { return squatNote(Math.max(0, squatTotal(note) + delta)); }
 
-// date 那一週（週一到週日）所有深蹲紀錄的總次數
-function squatWeekSum(logs, date) {
+// date 那一週（週一到週日）某個動作所有紀錄的總次數
+function moveWeekSum(logs, date, name) {
   var start = addDays(date, -(weekdayOf(date) - 1)), end = addDays(start, 6), sum = 0;
-  logs.forEach(function (l) { if (l.taskId === SQUAT_TASK_ID && l.date >= start && l.date <= end) sum += squatTotal(l.note); });
+  logs.forEach(function (l) { if (l.taskId === SQUAT_TASK_ID && l.date >= start && l.date <= end) sum += moveTotal(l.note, name); });
   return sum;
 }
+
+// date 那一週（週一到週日）所有深蹲紀錄的總次數
+function squatWeekSum(logs, date) { return moveWeekSum(logs, date, SQUAT_NAME); }
 
 // 前後端對照與同步狀態（純函式）。
 // API_LEVEL：後端 API 新增或改變行為時加 1。前端和後端編進同一個數字；後端在 bootstrap 回應裡回報自己編進去的那個，

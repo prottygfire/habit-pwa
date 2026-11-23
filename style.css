@@ -312,3 +312,10 @@ td.auto { font-weight: 600; }
 .squat-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 0 0 4px; text-align: left; cursor: pointer; min-height: 36px; }
 
 .sync-banner { display: block; width: 100%; text-align: left; border-color: var(--warn); cursor: pointer; }
+
+.opt .stp { flex: none; min-width: 48px; padding: 0 6px; }
+.swipe { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.swipe::-webkit-scrollbar { display: none; }
+.swipe-pane { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; }
+.swipe-tabs { display: flex; align-items: center; gap: 8px; margin: 4px 0 6px; }
+.swipe-tabs .muted { margin-left: auto; font-size: .8rem; }
